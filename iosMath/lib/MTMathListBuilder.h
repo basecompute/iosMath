@@ -25,6 +25,10 @@ NS_ASSUME_NONNULL_BEGIN
 /** Contains any error that occurred during parsing. */
 @property (nonatomic, readonly, nullable) NSError *error;
 
+/** Number of unknown commands recovered as literal placeholders during
+ the last build. Zero means the formula typeset without placeholders. */
+@property (nonatomic, readonly) NSUInteger numberOfUnknownCommands;
+
 /** Create a `MTMathListBuilder` for the given string. After instantiating the
     `MTMathListBuilder, use `build` to build the mathlist. Create a new `MTMathListBuilder`
     for each string that needs to be parsed. Do not reuse the object.

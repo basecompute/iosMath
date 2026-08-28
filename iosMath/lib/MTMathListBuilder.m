@@ -52,12 +52,18 @@ static const NSInteger kMTMaxRecursionDepth = 150;
     MTFontStyle _currentFontStyle;
     BOOL _spacesAllowed;
     NSInteger _recursionDepth;
+    NSUInteger _numberOfUnknownCommands;
 }
 
 
 /// Reads one {…} group as raw text (nesting-aware); returns @"" when the
 /// next token is not a group. Used by argument-taking commands whose
 /// arguments are not math (\genfrac delimiters, \unicode codepoints).
+- (NSUInteger) numberOfUnknownCommands
+{
+    return _numberOfUnknownCommands;
+}
+
 - (NSString*) readRawGroup
 {
     [self skipSpaces];
@@ -998,9 +1004,24 @@ static const NSInteger kMTMaxRecursionDepth = 150;
         mathColorbox.innerList = [self buildInternal:true];
         return mathColorbox;
     } else {
-        NSString* errorMessage = [NSString stringWithFormat:@"Invalid command \\%@", command];
-        [self setError:MTParseErrorInvalidCommand message:errorMessage];
-        return nil;
+        // KaTeX-style recovery (throwOnError:false): an unknown COMMAND
+        // renders as its literal name in red typewriter instead of
+        // failing the whole formula. Structural errors (environments,
+        // braces, \left/\right) remain fatal — they cannot be recovered
+        // into sensible output mid-formula.
+        _numberOfUnknownCommands += 1;
+        MTMathList* literal = [MTMathList new];
+        NSString* literalText = [NSString stringWithFormat:@"\\%@", command];
+        for (NSUInteger i = 0; i < literalText.length; i++) {
+            NSString* ch = [literalText substringWithRange:NSMakeRange(i, 1)];
+            MTMathAtom* atom = [MTMathAtom atomWithType:kMTMathAtomOrdinary value:ch];
+            atom.fontStyle = kMTFontStyleTypewriter;
+            [literal addAtom:atom];
+        }
+        MTMathColor* placeholder = [[MTMathColor alloc] init];
+        placeholder.colorString = @"#CC4B47";
+        placeholder.innerList = literal;
+        return placeholder;
     }
 }
 
