@@ -89,12 +89,19 @@ NSString *const MTFontNameLatinModern       = @"latinmodern-math";
         case kMTTextStyleRoman:
         case kMTTextStyleBold:
         case kMTTextStyleItalic:
-        default:
-            baseFont = CTFontCreateWithName(CFSTR("LatinModernMath-Regular"), size, NULL);
-            if (baseFont == NULL) {
+        default: {
+            // Use the BUNDLED Latin Modern via the font manager: name
+            // lookup (CTFontCreateWithName) only finds system-registered
+            // fonts, so on machines without Latin Modern installed it
+            // silently fell back to the system sans.
+            MTFont *mathFont = [[MTFontManager fontManager] fontWithName:MTFontNameLatinModern size:size];
+            if (mathFont != nil) {
+                baseFont = (CTFontRef)CFRetain(mathFont.ctFont);
+            } else {
                 baseFont = CTFontCreateUIFontForLanguage(kCTFontUIFontSystem, size, NULL);
             }
             break;
+        }
     }
 
     CTFontSymbolicTraits requested = 0;
