@@ -69,10 +69,17 @@ static const NSInteger kMTMaxRecursionDepth = 150;
     }
     NSMutableString* text = [NSMutableString string];
     NSInteger depth = 1;
+    BOOL escaped = NO;
     while ([self hasCharacters]) {
         unichar c = [self getNextCharacter];
-        if (c == '{') depth++;
-        else if (c == '}') {
+        if (escaped) {
+            // \{ and \} are literal braces, not group structure.
+            escaped = NO;
+        } else if (c == '\\') {
+            escaped = YES;
+        } else if (c == '{') {
+            depth++;
+        } else if (c == '}') {
             depth--;
             if (depth == 0) break;
         }
@@ -819,6 +826,10 @@ static const NSInteger kMTMaxRecursionDepth = 150;
         }
         frac.numerator = [self buildInternal:true];
         frac.denominator = [self buildInternal:true];
+        // A fraction with missing parts asserts deep inside layout —
+        // never hand the typesetter one.
+        if (frac.numerator == nil) frac.numerator = [MTMathList new];
+        if (frac.denominator == nil) frac.denominator = [MTMathList new];
         NSString* left = [MTMathListBuilder normalizeGenfracDelimiter:leftDelim];
         NSString* right = [MTMathListBuilder normalizeGenfracDelimiter:rightDelim];
         if (left.length > 0) frac.leftDelimiter = left;
