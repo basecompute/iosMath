@@ -862,11 +862,33 @@ static void getBboxDetails(CGRect bbox, CGFloat* ascent, CGFloat* descent)
                 [self addInterElementSpace:prevNode currentType:stack.displayClass];
                 atom.type = stack.displayClass;
                 MTDisplay* display = [self makeStack:stack];
+                if (atom.subScript || atom.superScript) {
+                    // TeX treats \overbrace/\underbrace as operators whose
+                    // scripts are LIMITS: ^ centers above the over cap, _
+                    // centers below the under cap. Corner scripts here read
+                    // as plain super/subscripts stuck to the brace's edge.
+                    MTMathListDisplay *superScript = nil, *subScript = nil;
+                    if (atom.superScript) {
+                        superScript = [MTTypesetter createLineForMathList:atom.superScript font:_font style:self.scriptStyle cramped:self.superScriptCramped];
+                    }
+                    if (atom.subScript) {
+                        subScript = [MTTypesetter createLineForMathList:atom.subScript font:_font style:self.scriptStyle cramped:self.subscriptCramped];
+                    }
+                    MTLargeOpLimitsDisplay* limitsDisplay = [[MTLargeOpLimitsDisplay alloc] initWithNucleus:display upperLimit:superScript lowerLimit:subScript limitShift:0 extraPadding:0];
+                    if (superScript) {
+                        limitsDisplay.upperLimitGap = [self upperLimitGapFor:superScript];
+                    }
+                    if (subScript) {
+                        limitsDisplay.lowerLimitGap = [self lowerLimitGapFor:subScript];
+                    }
+                    limitsDisplay.position = _currentPosition;
+                    limitsDisplay.range = atom.indexRange;
+                    [_displayAtoms addObject:limitsDisplay];
+                    _currentPosition.x += limitsDisplay.width;
+                    break;
+                }
                 [_displayAtoms addObject:display];
                 _currentPosition.x += display.width;
-                if (atom.subScript || atom.superScript) {
-                    [self makeScripts:atom display:display index:atom.indexRange.location delta:0];
-                }
                 break;
             }
 
