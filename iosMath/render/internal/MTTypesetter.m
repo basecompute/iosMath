@@ -1029,7 +1029,15 @@ static void getBboxDetails(CGRect bbox, CGFloat* ascent, CGFloat* descent)
     NSArray* spaceArray = getInterElementSpaces()[leftIndex];
     NSNumber* spaceTypeObj = spaceArray[rightIndex];
     MTInterElementSpaceType spaceType = spaceTypeObj.intValue;
-    NSAssert(spaceType != kMTSpaceInvalid, @"Invalid space between %lu and %lu", (unsigned long)left, (unsigned long)right);
+    if (spaceType == kMTSpaceInvalid) {
+        // TeX has no entry for pairs like binary/binary because it
+        // demotes the second binary to ordinary before spacing; atom
+        // sequences that slip past that demotion (e.g. binary, explicit
+        // space, binary) used to ASSERT here and take the whole app
+        // down. A renderer must not crash on a spacing pair: fall back
+        // to medium space, TeX's ordinary/binary spacing.
+        spaceType = kMTSpaceNSMedium;
+    }
     
     int spaceMultipler = [self getSpacingInMu:spaceType];
     if (spaceMultipler > 0) {
