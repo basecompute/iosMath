@@ -43,6 +43,7 @@ NSString *const MTParseError = @"ParseError";
 static const NSInteger kMTMaxRecursionDepth = 150;
 
 @implementation MTMathListBuilder {
+
     unichar* _chars;
     int _currentChar;
     NSUInteger _length;
@@ -51,6 +52,42 @@ static const NSInteger kMTMaxRecursionDepth = 150;
     MTFontStyle _currentFontStyle;
     BOOL _spacesAllowed;
     NSInteger _recursionDepth;
+}
+
+
+/// Reads one {…} group as raw text (nesting-aware); returns @"" when the
+/// next token is not a group. Used by argument-taking commands whose
+/// arguments are not math (\genfrac delimiters, \unicode codepoints).
+- (NSString*) readRawGroup
+{
+    [self skipSpaces];
+    if (![self hasCharacters]) return @"";
+    unichar ch = [self getNextCharacter];
+    if (ch != '{') {
+        [self unlookCharacter];
+        return @"";
+    }
+    NSMutableString* text = [NSMutableString string];
+    NSInteger depth = 1;
+    while ([self hasCharacters]) {
+        unichar c = [self getNextCharacter];
+        if (c == '{') depth++;
+        else if (c == '}') {
+            depth--;
+            if (depth == 0) break;
+        }
+        [text appendFormat:@"%C", c];
+    }
+    return text;
+}
+
++ (NSString*) normalizeGenfracDelimiter:(NSString*) raw
+{
+    NSString* trimmed = [raw stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+    if ([trimmed isEqualToString:@"\\{"]) return @"{";
+    if ([trimmed isEqualToString:@"\\}"]) return @"}";
+    if ([trimmed isEqualToString:@"."]) return @"";
+    return trimmed;
 }
 
 - (instancetype)initWithString:(NSString *)str
@@ -762,6 +799,51 @@ static const NSInteger kMTMaxRecursionDepth = 150;
         return [[MTLargeDelimiter alloc] initWithDelimiterNucleus:boundary.nucleus
                                                         mathClass:mathClass
                                                              size:size];
+    }
+    if ([command isEqualToString:@"genfrac"]) {
+        // \genfrac{ldelim}{rdelim}{thickness}{style}{num}{den}
+        NSString* leftDelim = [self readRawGroup];
+        NSString* rightDelim = [self readRawGroup];
+        NSString* thickness = [self readRawGroup];
+        NSString* styleText = [self readRawGroup];
+        BOOL hasRule = !([thickness hasPrefix:@"0"]);
+        MTFraction* frac = hasRule ? [MTFraction new] : [[MTFraction alloc] initWithRule:NO];
+        if (styleText.length > 0) {
+            switch ([styleText characterAtIndex:0]) {
+                case '0': frac.styleOverride = kMTFractionStyleDisplay; break;
+                case '1': frac.styleOverride = kMTFractionStyleText; break;
+                case '2': frac.styleOverride = kMTFractionStyleScript; break;
+                case '3': frac.styleOverride = kMTFractionStyleScriptScript; break;
+                default: break;
+            }
+        }
+        frac.numerator = [self buildInternal:true];
+        frac.denominator = [self buildInternal:true];
+        NSString* left = [MTMathListBuilder normalizeGenfracDelimiter:leftDelim];
+        NSString* right = [MTMathListBuilder normalizeGenfracDelimiter:rightDelim];
+        if (left.length > 0) frac.leftDelimiter = left;
+        if (right.length > 0) frac.rightDelimiter = right;
+        return frac;
+    }
+    if ([command isEqualToString:@"unicode"]) {
+        // \unicode{x2AEB} / \unicode{0x2AEB} / \unicode{2AEB}
+        NSString* codeText = [self readRawGroup];
+        NSString* hex = codeText.lowercaseString;
+        if ([hex hasPrefix:@"0x"]) hex = [hex substringFromIndex:2];
+        if ([hex hasPrefix:@"x"]) hex = [hex substringFromIndex:1];
+        unsigned int code = 0;
+        NSScanner* scanner = [NSScanner scannerWithString:hex];
+        if ([scanner scanHexInt:&code] && code > 0) {
+            NSString* value = [[NSString alloc] initWithBytes:&code
+                                                       length:sizeof(code)
+                                                     encoding:NSUTF32LittleEndianStringEncoding];
+            if (value) {
+                return [MTMathAtom atomWithType:kMTMathAtomOrdinary value:value];
+            }
+        }
+        NSString* errorMessage = [NSString stringWithFormat:@"Invalid \\unicode value: %@", codeText];
+        [self setError:MTParseErrorInvalidCommand message:errorMessage];
+        return nil;
     }
     NSDictionary<NSString*, NSDictionary*>* fracTable = [MTMathListBuilder fractionMacroCommands];
     NSDictionary* fracSpec = fracTable[command];
