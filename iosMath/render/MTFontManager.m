@@ -74,21 +74,28 @@ NSString *const MTFontNameLatinModern       = @"latinmodern-math";
 + (CTFontRef) textCTFontForStyle:(MTTextStyle) style
                             size:(CGFloat) size
 {
-    CTFontUIFontType base;
+    // \text{} in LaTeX is the math face's roman, not the UI sans. Use
+    // the bundled Latin Modern face for roman/bold/italic text runs;
+    // CoreText's cascade still falls back to system fonts for glyphs it
+    // lacks (CJK etc.), which is what the UI-font mapping was for.
+    CTFontRef baseFont = NULL;
     switch (style) {
         case kMTTextStyleTypewriter:
-            base = kCTFontUIFontUserFixedPitch;
+            baseFont = CTFontCreateUIFontForLanguage(kCTFontUIFontUserFixedPitch, size, NULL);
+            break;
+        case kMTTextStyleSansSerif:
+            baseFont = CTFontCreateUIFontForLanguage(kCTFontUIFontSystem, size, NULL);
             break;
         case kMTTextStyleRoman:
         case kMTTextStyleBold:
         case kMTTextStyleItalic:
-        case kMTTextStyleSansSerif:
         default:
-            base = kCTFontUIFontSystem;
+            baseFont = CTFontCreateWithName(CFSTR("LatinModernMath-Regular"), size, NULL);
+            if (baseFont == NULL) {
+                baseFont = CTFontCreateUIFontForLanguage(kCTFontUIFontSystem, size, NULL);
+            }
             break;
     }
-
-    CTFontRef baseFont = CTFontCreateUIFontForLanguage(base, size, NULL);
 
     CTFontSymbolicTraits requested = 0;
     if (style == kMTTextStyleBold)   requested |= kCTFontTraitBold;
