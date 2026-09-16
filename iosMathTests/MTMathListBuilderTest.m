@@ -3430,6 +3430,7 @@ static NSArray* getTestDataLargeDelimiters() {
         @"varnothing" : @[ @"∅", @(kMTMathAtomOrdinary) ],
         @"thicksim" : @[ @"∼", @(kMTMathAtomRelation) ],
         @"circlearrowright" : @[ @"↻", @(kMTMathAtomRelation) ],
+        @"&" : @[ @"&", @(kMTMathAtomOrdinary) ],
     };
     for (NSString* name in expected) {
         MTMathAtom* atom = [MTMathAtomFactory atomForLatexSymbolName:name];
@@ -3437,6 +3438,10 @@ static NSArray* getTestDataLargeDelimiters() {
         XCTAssertEqualObjects(atom.nucleus, expected[name][0], @"%@", name);
         XCTAssertEqual(atom.type, [expected[name][1] integerValue], @"%@", name);
     }
+    // \& is a single-character command like \% and \#.
+    MTMathList* ampersand = [MTMathListBuilder buildFromString:@"R\\&D"];
+    XCTAssertEqual(ampersand.atoms.count, 3);
+    XCTAssertEqualObjects(ampersand.atoms[1].nucleus, @"&");
     // Named delimiters work after \left and \right.
     NSError* error = nil;
     MTMathList* list = [MTMathListBuilder buildFromString:@"\\left\\lVert x \\right\\rVert + \\left\\lbrack y \\right\\rbrack" error:&error];

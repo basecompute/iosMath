@@ -1072,7 +1072,7 @@ static const NSInteger kMTMaxRecursionDepth = 150;
     static NSSet<NSNumber*>* singleCharCommands = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        NSArray* singleChars = @[ @'{', @'}', @'$', @'#', @'%', @'_', @'|', @' ', @',', @'>', @';', @':', @'!', @'\\' ];
+        NSArray* singleChars = @[ @'{', @'}', @'$', @'#', @'%', @'&', @'_', @'|', @' ', @',', @'>', @';', @':', @'!', @'\\' ];
         singleCharCommands = [[NSSet alloc] initWithArray:singleChars];
     });
     if ([self hasCharacters]) {
