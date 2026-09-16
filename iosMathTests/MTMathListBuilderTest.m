@@ -1307,7 +1307,7 @@ static NSArray* getTestDataLeftRight() {
     
     for (int i = 0; i < 1; i++) {
         MTColumnAlignment alignment = [table getAlignmentForColumn:i];
-        XCTAssertEqual(alignment, kMTColumnAlignmentLeft);
+        XCTAssertEqual(alignment, kMTColumnAlignmentCenter);
         for (int j = 0; j < 2; j++) {
             MTMathList* cell = table.cells[j][i];
             XCTAssertEqual(cell.atoms.count, 1);
@@ -3456,6 +3456,43 @@ static NSArray* getTestDataLargeDelimiters() {
 }
 
 #pragma mark - Builder macros and Unicode input
+
+- (void) testColorSwitchColorsTheRestOfTheGroup
+{
+    NSError* error = nil;
+    // Two-argument form: only the braced content.
+    MTMathList* list = [MTMathListBuilder buildFromString:@"\\color{#ff0000}{e^{i\\pi}} + 1" error:&error];
+    XCTAssertNotNil(list, @"%@", error);
+    XCTAssertEqual(list.atoms.count, 3);
+    MTMathColor* color = (MTMathColor*) list.atoms[0];
+    XCTAssertEqual(color.type, kMTMathAtomColor);
+    XCTAssertEqual(color.innerList.atoms.count, 1);
+    XCTAssertNotNil(color.innerList.atoms[0].superScript);
+    XCTAssertNil(color.superScript);
+
+    // Switch form: the rest of the enclosing group, and nothing outside it.
+    list = [MTMathListBuilder buildFromString:@"{\\color{#ff0000} x + y} - z" error:&error];
+    XCTAssertNotNil(list, @"%@", error);
+    XCTAssertEqual(list.atoms.count, 3);
+    color = (MTMathColor*) list.atoms[0];
+    XCTAssertEqual(color.type, kMTMathAtomColor);
+    XCTAssertEqual(color.innerList.atoms.count, 3);
+    XCTAssertEqualObjects(list.atoms[2].nucleus, @"z");
+
+    // Switch form at top level runs to the end.
+    list = [MTMathListBuilder buildFromString:@"a \\color{#00ff00} b + c" error:&error];
+    XCTAssertNotNil(list, @"%@", error);
+    XCTAssertEqual(list.atoms.count, 2);
+    color = (MTMathColor*) list.atoms[1];
+    XCTAssertEqual(color.innerList.atoms.count, 3);
+
+    // Inside a table cell the switch stops at the cell boundary.
+    list = [MTMathListBuilder buildFromString:@"\\begin{matrix} \\color{#0000ff} a & b \\\\ c & d \\end{matrix}" error:&error];
+    XCTAssertNotNil(list, @"%@", error);
+    MTMathTable* table = (MTMathTable*) list.atoms[0];
+    XCTAssertEqual(table.numRows, 2);
+    XCTAssertEqual(table.numColumns, 2);
+}
 
 - (void) testModFamilyExpands
 {

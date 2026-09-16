@@ -250,6 +250,13 @@ static const NSInteger kMTMaxRecursionDepth = 150;
     return [NSString stringWithCharacters:&ch length:1];
 }
 
+- (unichar) peekCharacter
+{
+    unichar ch = [self getNextCharacter];
+    [self unlookCharacter];
+    return ch;
+}
+
 + (NSSet<NSString*>*) fontSizeCommandNames
 {
     static NSSet<NSString*>* names = nil;
@@ -601,6 +608,34 @@ static const NSInteger kMTMaxRecursionDepth = 150;
                 // \Large, \small, …: size changes are not modelled, the
                 // content still typesets.
                 continue;
+            }
+            if ([command isEqualToString:@"color"] && !oneCharOnly) {
+                NSString* colorStr = [self readColor];
+                if (!colorStr) {
+                    return nil;
+                }
+                MTMathColor* mathColor = [[MTMathColor alloc] init];
+                mathColor.colorString = colorStr;
+                [self skipSpaces];
+                if ([self hasCharacters] && [self peekCharacter] == '{') {
+                    // \color{c}{x}: the braced argument is the colored content.
+                    mathColor.innerList = [self buildInternal:true];
+                    if (_error) {
+                        return nil;
+                    }
+                    [list addAtom:mathColor];
+                    prevAtom = mathColor;
+                    continue;
+                }
+                // \color{c} x + y: LaTeX's switch form colors everything up
+                // to the end of the enclosing group, which the inner call
+                // consumes on our behalf.
+                mathColor.innerList = [self buildInternal:false stopChar:stop];
+                if (_error) {
+                    return nil;
+                }
+                [list addAtom:mathColor];
+                return list;
             }
             if ([command isEqualToString:@"not"] || [[MTMathListBuilder modCommandNames] containsObject:command]) {
                 MTMathList* expansion = [command isEqualToString:@"not"] ? [self buildNegation] : [self buildModCommand:command];

@@ -489,12 +489,13 @@ static void insertStyleIntoCells(MTMathTable* table, MTLineStyle style)
             return table;
         }
     } else if (!env) {
-        // The default env.
+        // The default env: lines split by a top-level \\. KaTeX and MathJax
+        // center each line; a grid with & stays left-aligned.
         table.interRowAdditionalSpacing = 1;
         table.interColumnSpacing = 0;
         NSInteger cols = table.numColumns;
         for (int i = 0; i < cols; i++) {
-            [table setAlignment:kMTColumnAlignmentLeft forColumn:i];
+            [table setAlignment:(cols == 1 ? kMTColumnAlignmentCenter : kMTColumnAlignmentLeft) forColumn:i];
         }
         return table;
     } else if ([base isEqualToString:@"array"] || [base isEqualToString:@"subarray"]) {
