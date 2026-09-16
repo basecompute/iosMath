@@ -89,6 +89,12 @@ FOUNDATION_EXPORT NSString *const MTSymbolDegree;
  */
 + (nullable MTMathAtom*) atomForCharacter:(unichar) ch;
 
+/** Returns an atom for a non-ASCII character typed directly into math
+ (≤, →, α, °, −): the atom its LaTeX command would produce when one
+ exists, otherwise an ordinary atom carrying the character. Returns nil
+ for whitespace. `string` is one code point, possibly a surrogate pair. */
++ (nullable MTMathAtom*) atomForUnicodeString:(NSString*) string;
+
 /** Returns a `MTMathList` with one atom per character in the given string. This function
  does not do any LaTeX conversion or interpretation. It simply uses `atomForCharacter` to
  convert the characters to atoms. Any character that cannot be converted is ignored. */

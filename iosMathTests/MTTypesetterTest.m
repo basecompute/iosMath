@@ -2852,4 +2852,30 @@
     }
 }
 
+- (void) testMacrosDecorationsAndUnicodeTypeset
+{
+    NSArray<NSString*>* sources = @[
+        @"a \\equiv b \\pmod{n} \\quad d \\bmod 9",
+        @"A \\xrightarrow[g]{f} B \\xleftarrow{\\text{label}} C",
+        @"\\boxed{x = \\frac{1}{2}}^{2} + \\cancel{y} + \\bcancel{z} + \\xcancel{w} + \\sout{v}",
+        @"a \\not\\in B \\quad \\not \\quad c \\not= d",
+        @"x ≤ y − 1 → ∞, θ = 90°, \U0001D465 ∈ ℝ, \\left⟨ x \\right⟩",
+        @"\\text{A, \\Gamma} + \\text{\\Large big}",
+    ];
+    for (NSString* source in sources) {
+        NSError* error = nil;
+        MTMathList* list = [MTMathListBuilder buildFromString:source error:&error];
+        XCTAssertNotNil(list, @"%@: %@", source, error);
+        MTMathListDisplay* display = [MTTypesetter createLineForMathList:list font:self.font style:kMTLineStyleDisplay];
+        XCTAssertNotNil(display, @"%@", source);
+        XCTAssertGreaterThan(display.width, 0, @"%@", source);
+    }
+    // A box is wider and taller than its content.
+    MTMathListDisplay* plain = [MTTypesetter createLineForMathList:[MTMathListBuilder buildFromString:@"x"] font:self.font style:kMTLineStyleDisplay];
+    MTMathListDisplay* boxed = [MTTypesetter createLineForMathList:[MTMathListBuilder buildFromString:@"\\boxed{x}"] font:self.font style:kMTLineStyleDisplay];
+    XCTAssertGreaterThan(boxed.width, plain.width);
+    XCTAssertGreaterThan(boxed.ascent, plain.ascent);
+    XCTAssertGreaterThan(boxed.descent, plain.descent);
+}
+
 @end

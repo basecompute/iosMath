@@ -66,6 +66,8 @@ static NSString* typeToText(MTMathAtomType type) {
             return @"Stack";
         case kMTMathAtomText:
             return @"Text";
+        case kMTMathAtomDecoration:
+            return @"Decoration";
         case kMTMathAtomBoundary:
             return @"Boundary";
         case kMTMathAtomSpace:
@@ -161,6 +163,9 @@ static NSString* fractionCommandForDelimiterPair(NSString* leftDelimiter, NSStri
             
         case kMTMathAtomColorbox:
             return [[MTMathColorbox alloc] init];
+
+        case kMTMathAtomDecoration:
+            return [[MTMathDecoration alloc] init];
             
         default:
             return [[MTMathAtom alloc] initWithType:type value:value];
@@ -996,6 +1001,65 @@ static NSString* fractionCommandForDelimiterPair(NSString* leftDelimiter, NSStri
 
 @end
 
+
+#pragma mark - MTMathDecoration
+
+@implementation MTMathDecoration
+
+- (instancetype)init
+{
+    self = [super initWithType:kMTMathAtomDecoration value:@""];
+    return self;
+}
+
+- (instancetype)initWithType:(MTMathAtomType)type value:(NSString *)value
+{
+    if (type == kMTMathAtomDecoration) {
+        return [self init];
+    }
+    @throw [NSException exceptionWithName:@"InvalidMethod"
+                                   reason:@"[MTMathDecoration initWithType:value:] cannot be called. Use [MTMathDecoration init] instead."
+                                 userInfo:nil];
+}
+
+- (NSString*) command
+{
+    switch (self.kind) {
+        case kMTMathDecorationCancel: return @"cancel";
+        case kMTMathDecorationBackCancel: return @"bcancel";
+        case kMTMathDecorationCrossCancel: return @"xcancel";
+        case kMTMathDecorationStrikeout: return @"sout";
+        case kMTMathDecorationBox: return @"boxed";
+    }
+    return @"cancel";
+}
+
+- (NSString *)stringValue
+{
+    return [NSString stringWithFormat:@"\\%@{%@}", self.command, self.innerList.stringValue];
+}
+
+- (void)appendLaTeXToString:(NSMutableString *)str
+{
+    [str appendFormat:@"\\%@{%@}", self.command, [MTMathListBuilder mathListToString:self.innerList]];
+}
+
+- (id)copyWithZone:(NSZone *)zone
+{
+    MTMathDecoration* op = [super copyWithZone:zone];
+    op.innerList = [self.innerList copyWithZone:zone];
+    op.kind = self.kind;
+    return op;
+}
+
+- (instancetype)finalized
+{
+    MTMathDecoration *newDecoration = [super finalized];
+    newDecoration.innerList = newDecoration.innerList.finalized;
+    return newDecoration;
+}
+
+@end
 
 #pragma mark - MTMathTable
 

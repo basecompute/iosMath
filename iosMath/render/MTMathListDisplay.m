@@ -832,6 +832,95 @@ static BOOL isIos6Supported(void) {
 
 @end
 
+#pragma mark - MTDecorationDisplay
+
+@implementation MTDecorationDisplay
+
+- (instancetype)initWithInner:(MTMathListDisplay *)inner kind:(MTMathDecorationKind)kind position:(CGPoint)position range:(NSRange)range
+{
+    self = [super init];
+    if (self) {
+        _inner = inner;
+        _kind = kind;
+        self.position = position;
+        self.range = range;
+    }
+    return self;
+}
+
+- (void)setTextColor:(MTColor *)textColor
+{
+    [super setTextColor:textColor];
+    _inner.textColor = textColor;
+}
+
+- (void)draw:(CGContextRef)context
+{
+    [super draw:context];
+    [self.inner draw:context];
+
+    CGContextSaveGState(context);
+    [self.textColor setStroke];
+    MTBezierPath* path = [MTBezierPath bezierPath];
+    // Strikes span the inner list's own box; the frame adds its padding.
+    CGFloat left = self.position.x + self.padding;
+    CGFloat right = left + self.inner.width;
+    CGFloat bottom = self.position.y - self.inner.descent;
+    CGFloat top = self.position.y + self.inner.ascent;
+    switch (self.kind) {
+        case kMTMathDecorationCancel:
+            [path moveToPoint:CGPointMake(left, bottom)];
+            [path addLineToPoint:CGPointMake(right, top)];
+            break;
+        case kMTMathDecorationBackCancel:
+            [path moveToPoint:CGPointMake(left, top)];
+            [path addLineToPoint:CGPointMake(right, bottom)];
+            break;
+        case kMTMathDecorationCrossCancel:
+            [path moveToPoint:CGPointMake(left, bottom)];
+            [path addLineToPoint:CGPointMake(right, top)];
+            [path moveToPoint:CGPointMake(left, top)];
+            [path addLineToPoint:CGPointMake(right, bottom)];
+            break;
+        case kMTMathDecorationStrikeout: {
+            CGFloat y = self.position.y + self.strikeShiftUp;
+            [path moveToPoint:CGPointMake(left, y)];
+            [path addLineToPoint:CGPointMake(right, y)];
+            break;
+        }
+        case kMTMathDecorationBox: {
+            CGFloat inset = self.lineThickness / 2;
+            CGFloat x0 = self.position.x + inset;
+            CGFloat x1 = self.position.x + self.width - inset;
+            CGFloat y0 = self.position.y - self.descent + inset;
+            CGFloat y1 = self.position.y + self.ascent - inset;
+            [path moveToPoint:CGPointMake(x0, y0)];
+            [path addLineToPoint:CGPointMake(x1, y0)];
+            [path addLineToPoint:CGPointMake(x1, y1)];
+            [path addLineToPoint:CGPointMake(x0, y1)];
+            [path closePath];
+            break;
+        }
+    }
+    path.lineWidth = self.lineThickness;
+    [path stroke];
+    CGContextRestoreGState(context);
+}
+
+- (void) setPosition:(CGPoint)position
+{
+    super.position = position;
+    self.inner.position = CGPointMake(position.x + self.padding, position.y);
+}
+
+- (void) setPadding:(CGFloat)padding
+{
+    _padding = padding;
+    self.inner.position = CGPointMake(self.position.x + padding, self.position.y);
+}
+
+@end
+
 #pragma mark - MTAccentDisplay
 
 @implementation MTAccentDisplay

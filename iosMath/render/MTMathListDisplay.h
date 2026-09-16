@@ -176,6 +176,20 @@ typedef NS_ENUM(unsigned int, MTLinePosition)  {
 
 @end
 
+/// Rendering of a list with a mark drawn over it (\cancel, \bcancel, \xcancel, \sout, \boxed)
+@interface MTDecorationDisplay : MTDisplay
+
+- (instancetype)init NS_UNAVAILABLE;
+
+/** The decorated inner list. Its position is relative to the parent and it
+ is not treated as a sub-display. */
+@property (nonatomic, readonly) MTMathListDisplay* inner;
+
+/// The mark drawn over the inner list.
+@property (nonatomic, readonly) MTMathDecorationKind kind;
+
+@end
+
 /// Rendering of an list with an overline or underline
 @interface MTLineDisplay : MTDisplay
 

@@ -235,6 +235,139 @@ static const NSInteger kMTMaxRecursionDepth = 150;
     _currentChar = start;
 }
 
+// One code point, joining a surrogate pair when the source holds a
+// character outside the BMP (𝑥, 𝔸).
+- (NSString*) readUnicodeCharacterStartingWith:(unichar) ch
+{
+    if (CFStringIsSurrogateHighCharacter(ch) && [self hasCharacters]) {
+        unichar low = [self getNextCharacter];
+        if (CFStringIsSurrogateLowCharacter(low)) {
+            unichar pair[2] = { ch, low };
+            return [NSString stringWithCharacters:pair length:2];
+        }
+        [self unlookCharacter];
+    }
+    return [NSString stringWithCharacters:&ch length:1];
+}
+
++ (NSSet<NSString*>*) fontSizeCommandNames
+{
+    static NSSet<NSString*>* names = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        names = [NSSet setWithArray:@[ @"tiny", @"scriptsize", @"footnotesize", @"small", @"normalsize",
+                                       @"large", @"Large", @"LARGE", @"huge", @"Huge" ]];
+    });
+    return names;
+}
+
++ (NSSet<NSString*>*) modCommandNames
+{
+    static NSSet<NSString*>* names = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        names = [NSSet setWithArray:@[ @"pmod", @"bmod", @"mod", @"pod" ]];
+    });
+    return names;
+}
+
++ (NSDictionary<NSString*, NSString*>*) extensibleArrowCommands
+{
+    static NSDictionary<NSString*, NSString*>* commands = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        commands = @{ @"xrightarrow" : @"\u27F6", @"xleftarrow" : @"\u27F5", @"xleftrightarrow" : @"\u27F7",
+                      @"xRightarrow" : @"\u27F9", @"xLeftarrow" : @"\u27F8", @"xLeftrightarrow" : @"\u27FA",
+                      @"xmapsto" : @"\u27FC", @"xlongequal" : @"=",
+                      @"xhookrightarrow" : @"\u21AA", @"xhookleftarrow" : @"\u21A9",
+                      @"xrightharpoonup" : @"\u21C0", @"xleftharpoonup" : @"\u21BC",
+                      @"xrightharpoondown" : @"\u21C1", @"xleftharpoondown" : @"\u21BD",
+                      @"xrightleftharpoons" : @"\u21CC", @"xleftrightharpoons" : @"\u21CB",
+                      @"xtwoheadrightarrow" : @"\u21A0", @"xtwoheadleftarrow" : @"\u219E",
+                      @"xtofrom" : @"\u21C4" };
+    });
+    return commands;
+}
+
++ (NSDictionary<NSString*, NSNumber*>*) decorationCommands
+{
+    static NSDictionary<NSString*, NSNumber*>* commands = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        commands = @{ @"cancel" : @(kMTMathDecorationCancel), @"bcancel" : @(kMTMathDecorationBackCancel),
+                      @"xcancel" : @(kMTMathDecorationCrossCancel), @"sout" : @(kMTMathDecorationStrikeout),
+                      @"boxed" : @(kMTMathDecorationBox) };
+    });
+    return commands;
+}
+
++ (MTFontStyle) fontStyleForTextStyle:(MTTextStyle) textStyle
+{
+    switch (textStyle) {
+        case kMTTextStyleBold: return kMTFontStyleBold;
+        case kMTTextStyleItalic: return kMTFontStyleItalic;
+        case kMTTextStyleSansSerif: return kMTFontStyleSansSerif;
+        case kMTTextStyleTypewriter: return kMTFontStyleTypewriter;
+        case kMTTextStyleRoman: return kMTFontStyleRoman;
+    }
+    return kMTFontStyleRoman;
+}
+
+// \not slashes what follows (\not\in, \not=) with the combining long
+// solidus overlay, which CoreText composes onto the glyph. A lone \not
+// renders as the slash itself.
+- (MTMathList*) buildNegation
+{
+    MTMathList* next = [self buildInternal:true];
+    if (_error) {
+        return nil;
+    }
+    MTMathAtom* target = next.atoms.count == 1 ? next.atoms[0] : nil;
+    if (target && target.nucleus.length > 0 && target.nucleus.length <= 2 && target.type < kMTMathAtomBoundary) {
+        MTMathAtom* negated = [MTMathAtom atomWithType:target.type
+                                                 value:[target.nucleus stringByAppendingString:@"\u0338"]];
+        negated.fontStyle = target.fontStyle;
+        return [MTMathList mathListWithAtoms:negated, nil];
+    }
+    MTMathList* result = [MTMathList mathListWithAtoms:[MTMathAtom atomWithType:kMTMathAtomOrdinary value:@"/"], nil];
+    [result append:next];
+    return result;
+}
+
+// amsmath's mod family: \bmod is a binary "mod"; after a quad, \pmod{n}
+// is "(mod n)", \mod{n} is "mod n" and \pod{n} is "(n)".
+- (MTMathList*) buildModCommand:(NSString*) command
+{
+    MTMathList* result = [MTMathList new];
+    MTMathAtom* (^modAtom)(MTMathAtomType) = ^MTMathAtom*(MTMathAtomType type) {
+        MTMathAtom* atom = [MTMathAtom atomWithType:type value:@"mod"];
+        atom.fontStyle = kMTFontStyleRoman;
+        return atom;
+    };
+    if ([command isEqualToString:@"bmod"]) {
+        [result addAtom:modAtom(kMTMathAtomBinaryOperator)];
+        return result;
+    }
+    MTMathList* argument = [self buildInternal:true];
+    if (_error) {
+        return nil;
+    }
+    BOOL parenthesised = [command isEqualToString:@"pmod"] || [command isEqualToString:@"pod"];
+    [result addAtom:[[MTMathSpace alloc] initWithSpace:18]];
+    if (parenthesised) {
+        [result addAtom:[MTMathAtom atomWithType:kMTMathAtomOpen value:@"("]];
+    }
+    if (![command isEqualToString:@"pod"]) {
+        [result addAtom:modAtom(kMTMathAtomOrdinary)];
+        [result addAtom:[[MTMathSpace alloc] initWithSpace:6]];
+    }
+    [result append:argument];
+    if (parenthesised) {
+        [result addAtom:[MTMathAtom atomWithType:kMTMathAtomClose value:@")"]];
+    }
+    return result;
+}
+
 + (NSSet<NSString*>*) matrixEnvironmentNames
 {
     static NSSet<NSString*>* names = nil;
@@ -464,20 +597,60 @@ static const NSInteger kMTMaxRecursionDepth = 150;
                 [self readRawGroup];
                 continue;
             }
+            if ([[MTMathListBuilder fontSizeCommandNames] containsObject:command]) {
+                // \Large, \small, …: size changes are not modelled, the
+                // content still typesets.
+                continue;
+            }
+            if ([command isEqualToString:@"not"] || [[MTMathListBuilder modCommandNames] containsObject:command]) {
+                MTMathList* expansion = [command isEqualToString:@"not"] ? [self buildNegation] : [self buildModCommand:command];
+                if (!expansion) {
+                    return nil;
+                }
+                [list append:expansion];
+                prevAtom = list.atoms.lastObject;
+                if (oneCharOnly) {
+                    return list;
+                }
+                continue;
+            }
             // Recognize \text* commands first — they consume their {…}
             // body raw, so they must be handled before the legacy
             // font-style dispatch (and before the six \text* keys are
             // removed from MTMathAtomFactory.fontStyles).
             MTTextStyle textStyle = [MTMathAtomFactory textStyleWithName:command];
             if (textStyle != (MTTextStyle)NSNotFound) {
+                int argumentStart = _currentChar;
                 NSString* body = [self readTextArgument];
-                if (!body) {
-                    return nil; // error already set
+                if (body) {
+                    MTTextAtom* textAtom = [[MTTextAtom alloc] initWithText:body
+                                                                      style:textStyle];
+                    [list addAtom:textAtom];
+                    prevAtom = textAtom;
+                    if (oneCharOnly) {
+                        return list;
+                    }
+                    continue;
                 }
-                MTTextAtom* textAtom = [[MTTextAtom alloc] initWithText:body
-                                                                  style:textStyle];
-                [list addAtom:textAtom];
-                prevAtom = textAtom;
+                if (_error) {
+                    return nil;
+                }
+                // The body holds math (\Gamma, $…$): typeset it as math in
+                // the text face with spaces kept, rather than failing the
+                // whole formula.
+                _currentChar = argumentStart;
+                BOOL oldSpacesAllowed = _spacesAllowed;
+                MTFontStyle oldFontStyle = _currentFontStyle;
+                _spacesAllowed = YES;
+                _currentFontStyle = [MTMathListBuilder fontStyleForTextStyle:textStyle];
+                MTMathList* sublist = [self buildInternal:true];
+                _currentFontStyle = oldFontStyle;
+                _spacesAllowed = oldSpacesAllowed;
+                if (_error) {
+                    return nil;
+                }
+                prevAtom = [sublist.atoms lastObject];
+                [list append:sublist];
                 if (oneCharOnly) {
                     return list;
                 }
@@ -572,6 +745,15 @@ static const NSInteger kMTMaxRecursionDepth = 150;
         } else if (_spacesAllowed && ch == ' ') {
             // If spaces are allowed then spaces do not need escaping with a \ before being used.
             atom = [MTMathAtomFactory atomForLatexSymbolName:@" "];
+        } else if (ch > 0x7E) {
+            // Unicode math typed directly (≤, →, α, °, −): the atom its
+            // command would produce, or the character itself — never a
+            // silent drop.
+            atom = [MTMathAtomFactory atomForUnicodeString:[self readUnicodeCharacterStartingWith:ch]];
+            if (!atom) {
+                // Unicode whitespace
+                continue;
+            }
         } else {
             atom = [MTMathAtomFactory atomForCharacter:ch];
             if (!atom) {
@@ -734,6 +916,19 @@ static const NSInteger kMTMaxRecursionDepth = 150;
                 [body appendString:@" "];
             } else if ([escapable characterIsMember:esc]) {
                 [body appendFormat:@"%C", esc];
+            } else if ((esc >= 'a' && esc <= 'z') || (esc >= 'A' && esc <= 'Z')) {
+                [self unlookCharacter];
+                NSString* name = [self readString];
+                if ([[MTMathListBuilder fontSizeCommandNames] containsObject:name]) {
+                    // \Large etc. change nothing here; it swallows one space.
+                    if ([self hasCharacters] && [self getNextCharacter] != ' ') {
+                        [self unlookCharacter];
+                    }
+                    continue;
+                }
+                // A math command inside text: the caller re-reads the body
+                // as math in the text face (no error set).
+                return nil;
             } else {
                 [self setError:MTParseErrorInvalidCommand
                        message:[NSString stringWithFormat:
@@ -756,9 +951,8 @@ static const NSInteger kMTMaxRecursionDepth = 150;
             continue;
         }
         if (c == '$') {
-            // Math-in-text is out of scope.
-            [self setError:MTParseErrorInvalidCommand
-                   message:@"$ is not allowed inside \\text*"];
+            // Math inside text: the caller re-reads the body as math in
+            // the text face (no error set).
             return nil;
         }
         [body appendFormat:@"%C", c];
@@ -843,8 +1037,8 @@ static const NSInteger kMTMaxRecursionDepth = 150;
 {
     while ([self hasCharacters]) {
         unichar ch = [self getNextCharacter];
-        if (ch < 0x21 || ch > 0x7E) {
-            // skip non ascii characters and spaces
+        if (ch < 0x21 || [[NSCharacterSet whitespaceAndNewlineCharacterSet] characterIsMember:ch]) {
+            // skip spaces; non-ASCII characters are content (see atomForUnicodeString:)
             continue;
         } else {
             [self unlookCharacter];
@@ -853,7 +1047,7 @@ static const NSInteger kMTMaxRecursionDepth = 150;
     }
 }
 
-#define MTAssertNotSpace(ch) NSAssert((ch) >= 0x21 && (ch) <= 0x7E, @"Expected non space character %c", (ch));
+#define MTAssertNotSpace(ch) NSAssert((ch) >= 0x21, @"Expected non space character %c", (ch));
 
 - (BOOL) expectCharacter:(unichar) ch
 {
@@ -1146,6 +1340,42 @@ static const NSInteger kMTMaxRecursionDepth = 150;
                 : spec.displayClass;
             return stack;
         }
+    }
+    NSString* arrowGlyph = [MTMathListBuilder extensibleArrowCommands][command];
+    if (arrowGlyph) {
+        // \xrightarrow[below]{above}: the labels stack over and under a
+        // long arrow. The arrow does not stretch to the label yet.
+        MTMathList* below = nil;
+        if ([self expectCharacter:'[']) {
+            below = [self buildInternal:false stopChar:']'];
+            if (_error) {
+                return nil;
+            }
+        }
+        MTMathList* above = [self buildInternal:true];
+        if (_error) {
+            return nil;
+        }
+        MTMathStack* stack = [MTMathStack new];
+        stack.innerList = [MTMathList mathListWithAtoms:[MTMathAtom atomWithType:kMTMathAtomRelation value:arrowGlyph], nil];
+        if (above.atoms.count > 0) {
+            stack.over = [MTMathStackConstruction mathListWithList:above];
+        }
+        if (below.atoms.count > 0) {
+            stack.under = [MTMathStackConstruction mathListWithList:below];
+        }
+        stack.displayClass = kMTMathAtomRelation;
+        return stack;
+    }
+    NSNumber* decorationKind = [MTMathListBuilder decorationCommands][command];
+    if (decorationKind) {
+        MTMathDecoration* decoration = [MTMathDecoration new];
+        decoration.kind = decorationKind.unsignedIntegerValue;
+        decoration.innerList = [self buildInternal:true];
+        if (_error) {
+            return nil;
+        }
+        return decoration;
     }
     if ([command isEqualToString:@"begin"]) {
         NSString* env = [self readEnvironment];

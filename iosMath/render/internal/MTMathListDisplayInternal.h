@@ -119,6 +119,19 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
+@interface MTDecorationDisplay ()
+
+- (instancetype)initWithInner:(MTMathListDisplay*) inner kind:(MTMathDecorationKind) kind position:(CGPoint) position range:(NSRange) range NS_DESIGNATED_INITIALIZER;
+
+/// Stroke width of the mark.
+@property (nonatomic) CGFloat lineThickness;
+/// Space between the inner list and a box frame; zero for strikes.
+@property (nonatomic) CGFloat padding;
+/// Height of a horizontal strike above the baseline.
+@property (nonatomic) CGFloat strikeShiftUp;
+
+@end
+
 @interface MTLineDisplay ()
 
 - (instancetype)initWithInner:(MTMathListDisplay*) inner position:(CGPoint) position range:(NSRange) range NS_DESIGNATED_INITIALIZER;

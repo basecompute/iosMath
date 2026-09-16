@@ -137,6 +137,39 @@ NSString *const MTSymbolDegree = @"\u00B0"; // \circ
     }
 }
 
++ (nullable MTMathAtom*) atomForUnicodeString:(NSString*) string
+{
+    if (string.length == 0) {
+        return nil;
+    }
+    unichar first = [string characterAtIndex:0];
+    if ([[NSCharacterSet whitespaceAndNewlineCharacterSet] characterIsMember:first]) {
+        return nil;
+    }
+    // Characters whose LaTeX spelling is ASCII.
+    switch (first) {
+        case 0x2212: return [self atomForCharacter:'-'];
+        case 0x00D7: return [self atomForLatexSymbolName:@"times"];
+        case 0x00B7: return [self atomForLatexSymbolName:@"cdot"];
+        case 0x2019: return [self atomForLatexSymbolName:@"prime"];
+        default: break;
+    }
+    NSDictionary<NSNumber*, NSString*>* commands = [self textToLatexSymbolNames][string];
+    if (commands.count > 0) {
+        // Prefer the reading with the most specific spacing.
+        for (NSNumber* type in @[ @(kMTMathAtomRelation), @(kMTMathAtomBinaryOperator),
+                                  @(kMTMathAtomLargeOperator), @(kMTMathAtomOpen), @(kMTMathAtomClose),
+                                  @(kMTMathAtomPunctuation), @(kMTMathAtomVariable), @(kMTMathAtomOrdinary) ]) {
+            NSString* name = commands[type];
+            if (name) {
+                return [self atomForLatexSymbolName:name];
+            }
+        }
+        return [self atomForLatexSymbolName:commands.allValues.firstObject];
+    }
+    return [MTMathAtom atomWithType:kMTMathAtomOrdinary value:string];
+}
+
 + (MTMathList *)mathListForCharacters:(NSString *)chars
 {
     NSParameterAssert(chars);
@@ -253,6 +286,11 @@ NSString *const MTSymbolDegree = @"\u00B0"; // \circ
 {
     NSDictionary<NSString*, NSString*>* delims = [MTMathAtomFactory delimiters];
     NSString* delimValue = delims[delimName];
+    if (!delimValue) {
+        // A delimiter typed as its Unicode glyph (⟨, ⌈, ‖).
+        NSString* name = [self delimValueToName][delimName];
+        delimValue = name ? delims[name] : nil;
+    }
     if (!delimValue) {
         return nil;
     }

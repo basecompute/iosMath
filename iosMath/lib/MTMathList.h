@@ -66,6 +66,8 @@ typedef NS_ENUM(NSUInteger, MTMathAtomType)
     /// \textit, \textsf, \texttt. Captured raw at parse time; the body cannot
     /// contain math.
     kMTMathAtomText = 19,
+    /// A sub-list with a mark drawn over it: \cancel, \bcancel, \xcancel, \sout, \boxed.
+    kMTMathAtomDecoration = 20,
 
     // Atoms after this point do not support subscripts or superscripts
 
@@ -607,6 +609,39 @@ typedef NS_ENUM(NSUInteger, MTMathStackConstructionKind) {
 @property (nonatomic, nullable) NSString* colorString;
 
 /// The inner math list
+@property (nonatomic, nullable) MTMathList* innerList;
+
+@end
+
+/**
+ @typedef MTMathDecorationKind
+ @brief The mark an MTMathDecoration draws over its inner list.
+ */
+typedef NS_ENUM(NSUInteger, MTMathDecorationKind) {
+    /// \cancel: a rising diagonal.
+    kMTMathDecorationCancel,
+    /// \bcancel: a falling diagonal.
+    kMTMathDecorationBackCancel,
+    /// \xcancel: both diagonals.
+    kMTMathDecorationCrossCancel,
+    /// \sout: a horizontal strike through the axis.
+    kMTMathDecorationStrikeout,
+    /// \boxed: a rectangular frame with padding.
+    kMTMathDecorationBox,
+};
+
+/** An atom that draws a mark over its inner list (\cancel, \bcancel,
+ \xcancel, \sout, \boxed). Spaced as an ordinary atom; scripts attach
+ to the decorated whole. */
+@interface MTMathDecoration : MTMathAtom
+
+/// Creates an empty decoration (kind cancel, no inner list)
+- (instancetype) init NS_DESIGNATED_INITIALIZER;
+
+/// The mark to draw.
+@property (nonatomic) MTMathDecorationKind kind;
+
+/// The decorated math list
 @property (nonatomic, nullable) MTMathList* innerList;
 
 @end

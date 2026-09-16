@@ -50,6 +50,7 @@ NSUInteger getInterElementSpaceArrayIndexForType(MTMathAtomType type, BOOL row) 
     switch (type) {
         case kMTMathAtomColor:
         case kMTMathAtomColorbox:
+        case kMTMathAtomDecoration:    // Cancels and boxes are spaced as Ord
         case kMTMathAtomOrdinary:
         case kMTMathAtomPlaceholder:   // A placeholder is treated as ordinary
         case kMTMathAtomText:          // Text blocks are spaced as Ord
@@ -676,6 +677,24 @@ static void getBboxDetails(CGRect bbox, CGFloat* ascent, CGFloat* descent)
                 display.position = _currentPosition;
                 _currentPosition.x += display.width;
                 [_displayAtoms addObject:display];
+                break;
+            }
+
+            case kMTMathAtomDecoration: {
+                // stash the existing layout
+                if (_currentLine.length > 0) {
+                    [self addDisplayLine];
+                }
+                // Decorations are spaced as Ord (see getInterElementSpaceArrayIndexForType).
+                [self addInterElementSpace:prevNode currentType:atom.type];
+                atom.type = kMTMathAtomOrdinary;
+                MTDisplay* display = [self makeDecoration:(MTMathDecoration*) atom];
+                [_displayAtoms addObject:display];
+                _currentPosition.x += display.width;
+                // add super scripts || subscripts
+                if (atom.subScript || atom.superScript) {
+                    [self makeScripts:atom display:display index:atom.indexRange.location delta:0];
+                }
                 break;
             }
 
@@ -1856,6 +1875,30 @@ static void getBboxDetails(CGRect bbox, CGFloat* ascent, CGFloat* descent)
     overDisplay.descent = innerListDisplay.descent;
     overDisplay.width = innerListDisplay.width;
     return overDisplay;
+}
+
+#pragma mark Decorations
+
+- (MTDisplay*) makeDecoration:(MTMathDecoration*) decoration
+{
+    MTMathListDisplay* inner = [MTTypesetter createLineForMathList:decoration.innerList font:_font style:_style cramped:_cramped];
+    MTDecorationDisplay* display = [[MTDecorationDisplay alloc] initWithInner:inner kind:decoration.kind position:_currentPosition range:decoration.indexRange];
+    display.lineThickness = _styleFont.mathTable.fractionRuleThickness;
+    if (decoration.kind == kMTMathDecorationBox) {
+        // \fboxsep (3pt at 10pt) around the content, plus the rule itself.
+        CGFloat padding = 0.3 * _styleFont.fontSize + display.lineThickness;
+        display.padding = padding;
+        display.ascent = inner.ascent + padding;
+        display.descent = inner.descent + padding;
+        display.width = inner.width + 2 * padding;
+    } else {
+        display.ascent = inner.ascent;
+        display.descent = inner.descent;
+        display.width = inner.width;
+    }
+    // A strike sits on the math axis, like a fraction rule.
+    display.strikeShiftUp = _styleFont.mathTable.axisHeight;
+    return display;
 }
 
 #pragma mark Accents

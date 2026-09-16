@@ -2698,35 +2698,51 @@ static NSArray* getTestDataLargeDelimiters() {
     XCTAssertEqual(error.code, MTParseErrorMismatchBraces);
 }
 
-- (void) testTextNestedTextRejected {
+- (void) testTextNestedTextFallsBackToMath {
+    // A command inside a text body re-reads the body as math in the text
+    // face, so the inner \textit still produces its text atom.
     NSError *error = nil;
     MTMathList *list = [MTMathListBuilder buildFromString:@"\\textbf{\\textit{x}}"
                                                      error:&error];
-    XCTAssertNil(list);
-    XCTAssertEqual(error.code, MTParseErrorInvalidCommand);
+    XCTAssertNotNil(list);
+    XCTAssertNil(error);
+    XCTAssertEqual(list.atoms.count, (NSUInteger)1);
+    MTTextAtom *inner = (MTTextAtom *)list.atoms[0];
+    XCTAssertTrue([inner isKindOfClass:[MTTextAtom class]]);
+    XCTAssertEqualObjects(inner.text, @"x");
+    XCTAssertEqual(inner.textStyle, kMTTextStyleItalic);
 }
 
-- (void) testTextDollarRejected {
+- (void) testTextDollarFallsBackToMath {
+    // $…$ inside text re-reads the body as roman math; the dollars are skipped.
     NSError *error = nil;
     MTMathList *list = [MTMathListBuilder buildFromString:@"\\text{$x$}"
                                                      error:&error];
-    XCTAssertNil(list);
-    XCTAssertNotNil(error);
+    XCTAssertNotNil(list);
+    XCTAssertNil(error);
+    XCTAssertEqual(list.atoms.count, (NSUInteger)1);
+    XCTAssertEqualObjects(list.atoms[0].nucleus, @"x");
+    XCTAssertEqual(list.atoms[0].fontStyle, kMTFontStyleRoman);
 }
 
-- (void) testTextUnknownEscapeRejected {
-    NSError *error = nil;
-    MTMathList *list = [MTMathListBuilder buildFromString:@"\\text{a\\foo b}"
-                                                     error:&error];
-    XCTAssertNil(list);
-    XCTAssertEqual(error.code, MTParseErrorInvalidCommand);
+- (void) testTextUnknownEscapeRecoversAsPlaceholder {
+    // The body falls back to math, where \foo is a red placeholder.
+    MTMathListBuilder *builder = [[MTMathListBuilder alloc] initWithString:@"\\text{a\\foo b}"];
+    MTMathList *list = [builder build];
+    XCTAssertNotNil(list);
+    XCTAssertNil(builder.error);
+    XCTAssertEqual(builder.numberOfUnknownCommands, (NSUInteger)1);
+    XCTAssertEqualObjects(list.atoms[0].nucleus, @"a");
+    XCTAssertEqual(list.atoms[0].fontStyle, kMTFontStyleRoman);
 }
 
-- (void) testRawCyrillicDropped {
-    // Post-removal: raw Cyrillic outside \text* drops to nothing.
-    // Pre-removal: U+0411–U+044E silently became Variable atoms.
+- (void) testRawCyrillicBecomesOrdinaryAtoms {
+    // Raw non-ASCII outside \text* is kept as ordinary characters rather
+    // than dropped (generated LaTeX types ≤, →, ° and words directly).
     MTMathList *list = [MTMathListBuilder buildFromString:@"Привет"];
-    XCTAssertEqual(list.atoms.count, (NSUInteger)0);
+    XCTAssertEqual(list.atoms.count, (NSUInteger)6);
+    XCTAssertEqual(list.atoms[0].type, kMTMathAtomOrdinary);
+    XCTAssertEqualObjects(list.atoms[0].nucleus, @"П");
 }
 
 - (void) testRawCyrillicInTextStillWorks {
@@ -3432,6 +3448,156 @@ static NSArray* getTestDataLargeDelimiters() {
     // \mathscr renders with the script (calligraphic) face.
     list = [MTMathListBuilder buildFromString:@"\\mathscr{L}"];
     XCTAssertEqual(list.atoms[0].fontStyle, kMTFontStyleCaligraphic);
+}
+
+#pragma mark - Builder macros and Unicode input
+
+- (void) testModFamilyExpands
+{
+    NSError* error = nil;
+    MTMathList* list = [MTMathListBuilder buildFromString:@"a \\equiv b \\pmod{n}" error:&error];
+    XCTAssertNotNil(list, @"%@", error);
+    // a ≡ b, then: space ( mod thin-space n )
+    NSArray* types = @[ @(kMTMathAtomVariable), @(kMTMathAtomRelation), @(kMTMathAtomVariable), @(kMTMathAtomSpace),
+                        @(kMTMathAtomOpen), @(kMTMathAtomOrdinary), @(kMTMathAtomSpace), @(kMTMathAtomVariable), @(kMTMathAtomClose) ];
+    [self checkAtomTypes:list types:types desc:@"pmod"];
+    XCTAssertEqualObjects(list.atoms[5].nucleus, @"mod");
+    XCTAssertEqual(list.atoms[5].fontStyle, kMTFontStyleRoman);
+
+    list = [MTMathListBuilder buildFromString:@"d \\bmod 9" error:&error];
+    XCTAssertNotNil(list, @"%@", error);
+    [self checkAtomTypes:list types:@[ @(kMTMathAtomVariable), @(kMTMathAtomBinaryOperator), @(kMTMathAtomNumber) ] desc:@"bmod"];
+
+    list = [MTMathListBuilder buildFromString:@"x \\mod 2 + \\pod{p}" error:&error];
+    XCTAssertNotNil(list, @"%@", error);
+    XCTAssertNil(error);
+}
+
+- (void) testExtensibleArrowsStackTheirLabels
+{
+    NSError* error = nil;
+    MTMathList* list = [MTMathListBuilder buildFromString:@"A \\xrightarrow[g]{f} B" error:&error];
+    XCTAssertNotNil(list, @"%@", error);
+    XCTAssertEqual(list.atoms.count, 3);
+    MTMathStack* stack = (MTMathStack*) list.atoms[1];
+    XCTAssertEqual(stack.type, kMTMathAtomStack);
+    XCTAssertEqual(stack.displayClass, kMTMathAtomRelation);
+    XCTAssertEqualObjects(stack.innerList.atoms[0].nucleus, @"⟶");
+    XCTAssertNotNil(stack.over);
+    XCTAssertNotNil(stack.under);
+    XCTAssertEqualObjects(stack.over.list.atoms[0].nucleus, @"f");
+    XCTAssertEqualObjects(stack.under.list.atoms[0].nucleus, @"g");
+
+    list = [MTMathListBuilder buildFromString:@"\\xleftarrow{\\text{label}}" error:&error];
+    XCTAssertNotNil(list, @"%@", error);
+    stack = (MTMathStack*) list.atoms[0];
+    XCTAssertNil(stack.under);
+    XCTAssertEqualObjects(stack.innerList.atoms[0].nucleus, @"⟵");
+}
+
+- (void) testDecorations
+{
+    NSError* error = nil;
+    MTMathList* list = [MTMathListBuilder buildFromString:@"\\boxed{x = 1} + \\cancel{2}^{3}" error:&error];
+    XCTAssertNotNil(list, @"%@", error);
+    XCTAssertEqual(list.atoms.count, 3);
+    MTMathDecoration* box = (MTMathDecoration*) list.atoms[0];
+    XCTAssertEqual(box.type, kMTMathAtomDecoration);
+    XCTAssertEqual(box.kind, kMTMathDecorationBox);
+    XCTAssertEqual(box.innerList.atoms.count, 3);
+    MTMathDecoration* cancel = (MTMathDecoration*) list.atoms[2];
+    XCTAssertEqual(cancel.kind, kMTMathDecorationCancel);
+    XCTAssertNotNil(cancel.superScript);
+    XCTAssertEqualObjects([MTMathListBuilder mathListToString:list], @"\\boxed{x=1}+\\cancel{2}^{3}");
+
+    for (NSString* command in @[ @"bcancel", @"xcancel", @"sout" ]) {
+        NSString* str = [NSString stringWithFormat:@"\\%@{ab}", command];
+        list = [MTMathListBuilder buildFromString:str error:&error];
+        XCTAssertNotNil(list, @"%@", error);
+        NSString* expected = [NSString stringWithFormat:@"\\%@{ab}", command];
+        XCTAssertEqualObjects([MTMathListBuilder mathListToString:list], expected);
+    }
+}
+
+- (void) testNegationSlashesTheFollowingAtom
+{
+    NSError* error = nil;
+    MTMathList* list = [MTMathListBuilder buildFromString:@"a \\not\\in B, c \\not= d" error:&error];
+    XCTAssertNotNil(list, @"%@", error);
+    MTMathAtom* notIn = list.atoms[1];
+    XCTAssertEqual(notIn.type, kMTMathAtomRelation);
+    XCTAssertEqualObjects(notIn.nucleus, @"∉");
+    MTMathAtom* notEqual = list.atoms[5];
+    XCTAssertEqual(notEqual.type, kMTMathAtomRelation);
+    XCTAssertEqualObjects(notEqual.nucleus, @"≠");
+
+    // A lone \not is a slash, not a failure.
+    list = [MTMathListBuilder buildFromString:@"\\not \\quad x" error:&error];
+    XCTAssertNotNil(list, @"%@", error);
+    XCTAssertNil(error);
+    XCTAssertEqualObjects(list.atoms[0].nucleus, @"/");
+}
+
+- (void) testFontSizeCommandsAreIgnored
+{
+    NSError* error = nil;
+    MTMathList* list = [MTMathListBuilder buildFromString:@"\\Large x + \\small y" error:&error];
+    XCTAssertNotNil(list, @"%@", error);
+    [self checkAtomTypes:list types:@[ @(kMTMathAtomVariable), @(kMTMathAtomBinaryOperator), @(kMTMathAtomVariable) ] desc:@"sizes"];
+
+    list = [MTMathListBuilder buildFromString:@"\\text{\\Large big \\small small}" error:&error];
+    XCTAssertNotNil(list, @"%@", error);
+    MTTextAtom* text = (MTTextAtom*) list.atoms[0];
+    XCTAssertTrue([text isKindOfClass:[MTTextAtom class]]);
+    XCTAssertEqualObjects(text.text, @"big small");
+}
+
+- (void) testTextBodyWithMathFallsBackToRomanMath
+{
+    NSError* error = nil;
+    MTMathList* list = [MTMathListBuilder buildFromString:@"\\text{A, \\Gamma}" error:&error];
+    XCTAssertNotNil(list, @"%@", error);
+    XCTAssertNil(error);
+    // A , space Γ — all in the roman face, no MTTextAtom
+    XCTAssertEqual(list.atoms.count, 4);
+    XCTAssertEqualObjects(list.atoms[0].nucleus, @"A");
+    XCTAssertEqual(list.atoms[0].fontStyle, kMTFontStyleRoman);
+    XCTAssertEqualObjects(list.atoms[3].nucleus, @"Γ");
+
+    list = [MTMathListBuilder buildFromString:@"\\textbf{x $y$}" error:&error];
+    XCTAssertNotNil(list, @"%@", error);
+    XCTAssertNil(error);
+    XCTAssertEqual(list.atoms[0].fontStyle, kMTFontStyleBold);
+}
+
+- (void) testUnicodeMathInputMapsToAtoms
+{
+    NSError* error = nil;
+    MTMathList* list = [MTMathListBuilder buildFromString:@"x ≤ y − 1 → ∞, θ = 90°, a × b · c ∈ ℝ" error:&error];
+    XCTAssertNotNil(list, @"%@", error);
+    XCTAssertNil(error);
+    NSMutableDictionary<NSString*, NSNumber*>* typeByNucleus = [NSMutableDictionary dictionary];
+    for (MTMathAtom* atom in list.atoms) {
+        typeByNucleus[atom.nucleus] = @(atom.type);
+    }
+    XCTAssertEqualObjects(typeByNucleus[@"≤"], @(kMTMathAtomRelation));
+    XCTAssertEqualObjects(typeByNucleus[@"−"], @(kMTMathAtomBinaryOperator));
+    XCTAssertEqualObjects(typeByNucleus[@"→"], @(kMTMathAtomRelation));
+    XCTAssertEqualObjects(typeByNucleus[@"∞"], @(kMTMathAtomOrdinary));
+    XCTAssertEqualObjects(typeByNucleus[@"θ"], @(kMTMathAtomVariable));
+    XCTAssertEqualObjects(typeByNucleus[@"°"], @(kMTMathAtomOrdinary));
+    XCTAssertEqualObjects(typeByNucleus[@"×"], @(kMTMathAtomBinaryOperator));
+    XCTAssertEqualObjects(typeByNucleus[@"⋅"], @(kMTMathAtomBinaryOperator));
+    XCTAssertEqualObjects(typeByNucleus[@"∈"], @(kMTMathAtomRelation));
+    XCTAssertEqualObjects(typeByNucleus[@"ℝ"], @(kMTMathAtomOrdinary));
+
+    // Characters outside the BMP stay whole, and glyph delimiters work after \left.
+    list = [MTMathListBuilder buildFromString:@"\U0001D465 + \\left⟨ x \\right⟩" error:&error];
+    XCTAssertNotNil(list, @"%@", error);
+    XCTAssertEqualObjects(list.atoms[0].nucleus, @"\U0001D465");
+    MTInner* inner = (MTInner*) list.atoms[2];
+    XCTAssertEqual(inner.type, kMTMathAtomInner);
+    XCTAssertEqualObjects(inner.leftBoundary.nucleus, @"⟨");
 }
 
 @end
