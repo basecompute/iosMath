@@ -147,7 +147,7 @@ static const NSInteger kMTMaxRecursionDepth = 150;
 // anything else, calls -setError: and still returns YES (consumption happened);
 // the caller should bail on _error. If the next character is not '[', restores
 // the position and returns NO.
-- (BOOL) readOptionalAlignment:(MTFractionAlignment*)outAlignment
+- (BOOL) readOptionalAlignment:(MTFractionAlignment*)outAlignment command:(NSString*)command
 {
     if (![self hasCharacters]) {
         return NO;
@@ -160,7 +160,7 @@ static const NSInteger kMTMaxRecursionDepth = 150;
     // Read one alignment letter
     if (![self hasCharacters]) {
         [self setError:MTParseErrorInvalidCommand
-               message:@"Unterminated optional alignment for \\cfrac"];
+               message:[NSString stringWithFormat:@"Unterminated optional alignment for %@", command]];
         return YES;
     }
     unichar letter = [self getNextCharacter];
@@ -171,7 +171,7 @@ static const NSInteger kMTMaxRecursionDepth = 150;
         case 'r': alignment = kMTFractionAlignmentRight;  break;
         default: {
             NSString* errorMessage = [NSString stringWithFormat:
-                @"Invalid alignment for \\cfrac: '%C' (expected l, c, or r)", letter];
+                @"Invalid alignment for %@: '%C' (expected l, c, or r)", command, letter];
             [self setError:MTParseErrorInvalidCommand message:errorMessage];
             return YES;
         }
@@ -179,13 +179,13 @@ static const NSInteger kMTMaxRecursionDepth = 150;
     // Require closing ']'
     if (![self hasCharacters]) {
         [self setError:MTParseErrorInvalidCommand
-               message:@"Unterminated optional alignment for \\cfrac"];
+               message:[NSString stringWithFormat:@"Unterminated optional alignment for %@", command]];
         return YES;
     }
     unichar close = [self getNextCharacter];
     if (close != ']') {
         NSString* errorMessage = [NSString stringWithFormat:
-            @"Expected ']' to close \\cfrac alignment, got '%C'", close];
+            @"Expected ']' to close %@ alignment, got '%C'", command, close];
         [self setError:MTParseErrorInvalidCommand message:errorMessage];
         return YES;
     }
@@ -193,6 +193,161 @@ static const NSInteger kMTMaxRecursionDepth = 150;
         *outAlignment = alignment;
     }
     return YES;
+}
+
+// \\* forbids a page break and \\[6pt] adds vertical space. Neither
+// affects this layout, so both are consumed here rather than leaking
+// into the next row as literal characters.
+- (void) skipRowSeparatorArguments
+{
+    if ([self hasCharacters]) {
+        unichar ch = [self getNextCharacter];
+        if (ch != '*') {
+            [self unlookCharacter];
+        }
+    }
+    if (![self hasCharacters]) {
+        return;
+    }
+    int start = _currentChar;
+    unichar ch = [self getNextCharacter];
+    if (ch != '[') {
+        [self unlookCharacter];
+        return;
+    }
+    // Only a dimension counts ([2pt], [.5em], [-1ex]); anything else is
+    // row content that happens to start with a bracket.
+    BOOL sawDigit = NO;
+    while ([self hasCharacters]) {
+        ch = [self getNextCharacter];
+        if (ch == ']') {
+            if (sawDigit) {
+                return;
+            }
+            break;
+        }
+        if (ch >= '0' && ch <= '9') {
+            sawDigit = YES;
+        } else if (!(ch == '.' || ch == '-' || ch == '+' || ch == ' ' || (ch >= 'a' && ch <= 'z'))) {
+            break;
+        }
+    }
+    _currentChar = start;
+}
+
++ (NSSet<NSString*>*) matrixEnvironmentNames
+{
+    static NSSet<NSString*>* names = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        names = [NSSet setWithArray:@[ @"matrix", @"pmatrix", @"bmatrix", @"Bmatrix",
+                                       @"vmatrix", @"Vmatrix", @"smallmatrix" ]];
+    });
+    return names;
+}
+
+// Returns the text inside the {…} group at *index (skipping leading
+// spaces) and moves *index past it; nil when there is no group.
++ (NSString*) groupInSpec:(NSString*) spec index:(NSUInteger*) index
+{
+    NSUInteger i = *index;
+    while (i < spec.length && [spec characterAtIndex:i] == ' ') {
+        i++;
+    }
+    if (i >= spec.length || [spec characterAtIndex:i] != '{') {
+        return nil;
+    }
+    NSUInteger start = i + 1;
+    NSInteger depth = 0;
+    for (; i < spec.length; i++) {
+        unichar c = [spec characterAtIndex:i];
+        if (c == '{') {
+            depth++;
+        } else if (c == '}') {
+            depth--;
+            if (depth == 0) {
+                *index = i + 1;
+                return [spec substringWithRange:NSMakeRange(start, i - start)];
+            }
+        }
+    }
+    *index = spec.length;
+    return [spec substringFromIndex:start];
+}
+
+// Column alignments for an array preamble such as {c|rl} or {*{3}{c}}.
+// Rules (|), inter-column material (@{…}, !{…}, >{…}, <{…}) and the
+// widths of paragraph columns (p{…}) do not add columns.
++ (NSArray<NSNumber*>*) columnAlignmentsForSpec:(NSString*) spec
+{
+    NSMutableArray<NSNumber*>* alignments = [NSMutableArray array];
+    NSUInteger i = 0;
+    while (i < spec.length) {
+        unichar ch = [spec characterAtIndex:i++];
+        switch (ch) {
+            case 'l':
+                [alignments addObject:@(kMTColumnAlignmentLeft)];
+                break;
+            case 'c':
+                [alignments addObject:@(kMTColumnAlignmentCenter)];
+                break;
+            case 'r':
+                [alignments addObject:@(kMTColumnAlignmentRight)];
+                break;
+            case 'p':
+            case 'm':
+            case 'b':
+                [alignments addObject:@(kMTColumnAlignmentLeft)];
+                [self groupInSpec:spec index:&i];
+                break;
+            case '@':
+            case '!':
+            case '>':
+            case '<':
+                [self groupInSpec:spec index:&i];
+                break;
+            case '*': {
+                NSString* count = [self groupInSpec:spec index:&i];
+                NSString* repeated = [self groupInSpec:spec index:&i];
+                NSInteger times = MIN(count.integerValue, 32);
+                NSArray<NSNumber*>* inner = repeated ? [self columnAlignmentsForSpec:repeated] : @[];
+                for (NSInteger k = 0; k < times; k++) {
+                    [alignments addObjectsFromArray:inner];
+                }
+                break;
+            }
+            default:
+                break;
+        }
+    }
+    return alignments;
+}
+
+// Applies alignments to the table inside a \begin result, which may be
+// wrapped in an MTInner when the environment adds delimiters.
++ (void) applyColumnAlignments:(NSArray<NSNumber*>*) alignments everyColumn:(BOOL) everyColumn toTableAtom:(MTMathAtom*) atom
+{
+    MTMathTable* table = nil;
+    if (atom.type == kMTMathAtomTable) {
+        table = (MTMathTable*) atom;
+    } else if (atom.type == kMTMathAtomInner) {
+        for (MTMathAtom* inner in ((MTInner*) atom).innerList.atoms) {
+            if (inner.type == kMTMathAtomTable) {
+                table = (MTMathTable*) inner;
+                break;
+            }
+        }
+    }
+    if (!table) {
+        return;
+    }
+    NSInteger cols = table.numColumns;
+    for (NSInteger i = 0; i < cols; i++) {
+        NSNumber* alignment = everyColumn ? alignments[0] : (i < alignments.count ? alignments[i] : nil);
+        if (alignment) {
+            [table setAlignment:alignment.integerValue forColumn:i];
+        }
+    }
 }
 
 - (MTMathList *)build
@@ -298,6 +453,15 @@ static const NSInteger kMTMaxRecursionDepth = 150;
                 return nil;
             }
             if ([self applyModifier:command atom:prevAtom]) {
+                continue;
+            }
+            if ([command isEqualToString:@"hline"] || [command isEqualToString:@"hdashline"]) {
+                // Rules between array rows are not drawn (yet); the rows
+                // still typeset instead of the formula failing.
+                continue;
+            }
+            if ([command isEqualToString:@"cline"]) {
+                [self readRawGroup];
                 continue;
             }
             // Recognize \text* commands first — they consume their {…}
@@ -714,7 +878,7 @@ static const NSInteger kMTMaxRecursionDepth = 150;
     static NSSet<NSNumber*>* singleCharCommands = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        NSArray* singleChars = @[ @'{', @'}', @'$', @'#', @'%', @'_', @'|', @' ', @',', @'>', @';', @'!', @'\\' ];
+        NSArray* singleChars = @[ @'{', @'}', @'$', @'#', @'%', @'_', @'|', @' ', @',', @'>', @';', @':', @'!', @'\\' ];
         singleCharCommands = [[NSSet alloc] initWithArray:singleChars];
     });
     if ([self hasCharacters]) {
@@ -767,6 +931,15 @@ static const NSInteger kMTMaxRecursionDepth = 150;
     // Ignore spaces and nonascii.
     [self skipSpaces];
     NSString* env = [self readString];
+    // amsmath starred forms (align*, pmatrix*) share the base layout.
+    if ([self hasCharacters]) {
+        unichar star = [self getNextCharacter];
+        if (star == '*') {
+            env = [env stringByAppendingString:@"*"];
+        } else {
+            [self unlookCharacter];
+        }
+    }
     
     if (![self expectCharacter:'}']) {
         // We didn't find an closing brace, so invalid format.
@@ -871,7 +1044,7 @@ static const NSInteger kMTMaxRecursionDepth = 150;
         frac.styleOverride = style;
         if ([fracSpec[@"acceptsAlign"] boolValue]) {
             MTFractionAlignment alignment = kMTFractionAlignmentCenter;
-            if ([self readOptionalAlignment:&alignment]) {
+            if ([self readOptionalAlignment:&alignment command:@"\\cfrac"]) {
                 if (_error) {
                     return nil;
                 }
@@ -979,7 +1152,39 @@ static const NSInteger kMTMaxRecursionDepth = 150;
         if (!env) {
             return nil;
         }
+        // Environment arguments precede the body: a column spec for
+        // array/subarray, a pair count for alignat, an optional [l|c|r]
+        // for the mathtools matrix* family.
+        NSArray<NSNumber*>* alignments = nil;
+        BOOL everyColumn = NO;
+        BOOL starred = [env hasSuffix:@"*"];
+        NSString* base = starred ? [env substringToIndex:env.length - 1] : env;
+        if ([base isEqualToString:@"array"] || [base isEqualToString:@"subarray"]) {
+            alignments = [MTMathListBuilder columnAlignmentsForSpec:[self readRawGroup]];
+        } else if ([base isEqualToString:@"alignat"] || [base isEqualToString:@"alignedat"]
+                   || [base isEqualToString:@"xalignat"]) {
+            [self readRawGroup];
+        } else if (starred && [[MTMathListBuilder matrixEnvironmentNames] containsObject:base]) {
+            MTFractionAlignment alignment;
+            NSString* name = [NSString stringWithFormat:@"\\begin{%@}", env];
+            if ([self readOptionalAlignment:&alignment command:name]) {
+                if (_error) {
+                    return nil;
+                }
+                MTColumnAlignment column = kMTColumnAlignmentCenter;
+                if (alignment == kMTFractionAlignmentLeft) {
+                    column = kMTColumnAlignmentLeft;
+                } else if (alignment == kMTFractionAlignmentRight) {
+                    column = kMTColumnAlignmentRight;
+                }
+                alignments = @[ @(column) ];
+                everyColumn = YES;
+            }
+        }
         MTMathAtom* table = [self buildTable:env firstList:nil row:NO];
+        if (table && alignments.count > 0) {
+            [MTMathListBuilder applyColumnAlignments:alignments everyColumn:everyColumn toTableAtom:table];
+        }
         return table;
     } else if ([command isEqualToString:@"color"]) {
         // A color command has 2 arguments
@@ -1079,6 +1284,7 @@ static const NSInteger kMTMaxRecursionDepth = 150;
         [fracList addAtom:frac];
         return fracList;
     } else if ([command isEqualToString:@"\\"] || [command isEqualToString:@"cr"]) {
+        [self skipRowSeparatorArguments];
         if (_currentEnv) {
             // Stop the current list and increment the row count
             _currentEnv.numRows++;
@@ -1185,6 +1391,13 @@ static const NSInteger kMTMaxRecursionDepth = 150;
     if (!_currentEnv.ended && _currentEnv.envName) {
         [self setError:MTParseErrorMissingEnd message:@"Missing \\end"];
         return nil;
+    }
+    // A trailing \\ before \end leaves an empty last row; LaTeX ignores it.
+    if (rows.count > 1) {
+        NSArray<MTMathList*>* last = rows.lastObject;
+        if (last.count == 0 || (last.count == 1 && last[0].atoms.count == 0)) {
+            [rows removeLastObject];
+        }
     }
     NSError* error;
     MTMathAtom* table = [MTMathAtomFactory tableWithEnvironment:_currentEnv.envName rows:rows error:&error];

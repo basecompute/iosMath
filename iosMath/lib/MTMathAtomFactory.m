@@ -366,6 +366,48 @@ NSString *const MTSymbolDegree = @"\u00B0"; // \circ
     return [self fractionWithNumerator:num denominator:denom];
 }
 
+// Environment names may end in a star (align*, pmatrix*): in LaTeX the star
+// controls numbering or an optional argument, never the layout, so both
+// forms share one implementation.
+static NSString* baseEnvironmentName(NSString* env)
+{
+    if ([env hasSuffix:@"*"]) {
+        return [env substringToIndex:env.length - 1];
+    }
+    return env;
+}
+
+static BOOL isAlignedEnvironment(NSString* base)
+{
+    static NSSet<NSString*>* names = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        names = [NSSet setWithArray:@[ @"eqalign", @"split", @"aligned", @"align", @"alignat",
+                                       @"alignedat", @"flalign", @"xalignat" ]];
+    });
+    return [names containsObject:base];
+}
+
+static BOOL isGatherEnvironment(NSString* base)
+{
+    static NSSet<NSString*>* names = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        names = [NSSet setWithArray:@[ @"displaylines", @"gather", @"gathered", @"equation", @"multline" ]];
+    });
+    return [names containsObject:base];
+}
+
+// Every cell of a matrix-like environment starts in the given style.
+static void insertStyleIntoCells(MTMathTable* table, MTLineStyle style)
+{
+    for (NSArray<MTMathList*>* row in table.cells) {
+        for (MTMathList* cell in row) {
+            [cell insertAtom:[[MTMathStyle alloc] initWithStyle:style] atIndex:0];
+        }
+    }
+}
+
 + (nullable MTMathAtom *)tableWithEnvironment:(NSString *)env rows:(NSArray<NSArray<MTMathList *> *> *)rows error:(NSError * _Nullable __autoreleasing *)error
 {
     MTMathTable* table = [[MTMathTable alloc] initWithEnvironment:env];
@@ -375,31 +417,30 @@ NSString *const MTSymbolDegree = @"\u00B0"; // \circ
             [table setCell:row[j] forRow:i column:j];
         }
     }
+    NSString* base = env ? baseEnvironmentName(env) : nil;
     static NSDictionary<NSString*, NSArray*>* matrixEnvs = nil;
     static dispatch_once_t matrixEnvsOnce;
     dispatch_once(&matrixEnvsOnce, ^{
         matrixEnvs = @{ @"matrix" : @[],
+                        @"smallmatrix" : @[],
                         @"pmatrix" : @[ @"(", @")"],
                         @"bmatrix" : @[ @"[", @"]"],
                         @"Bmatrix" : @[ @"{", @"}"],
                         @"vmatrix" : @[ @"vert", @"vert"],
                         @"Vmatrix" : @[ @"Vert", @"Vert"], };
     });
-    if ([matrixEnvs objectForKey:env]) {
+    if (base && [matrixEnvs objectForKey:base]) {
         // it is set to matrix as the delimiters are converted to latex outside the table.
-        table.environment = @"matrix";
+        BOOL small = [base isEqualToString:@"smallmatrix"];
+        table.environment = small ? @"smallmatrix" : @"matrix";
         table.interRowAdditionalSpacing = 0;
-        table.interColumnSpacing = 18;
-        // All the lists are in textstyle
-        MTMathAtom* style = [[MTMathStyle alloc] initWithStyle:kMTLineStyleText];
-        for (int i = 0; i < table.cells.count; i++) {
-            NSArray<MTMathList*>* row = table.cells[i];
-            for (int j = 0; j < row.count; j++) {
-                [row[j] insertAtom:style atIndex:0];
-            }
-        }
+        // \arraycolsep on both sides of each column: 5pt normally, 0.3em
+        // for smallmatrix.
+        table.interColumnSpacing = small ? 11 : 18;
+        // All the lists are in textstyle (scriptstyle for smallmatrix)
+        insertStyleIntoCells(table, small ? kMTLineStyleScript : kMTLineStyleText);
         // Add delimiters
-        NSArray* delims = [matrixEnvs objectForKey:env];
+        NSArray* delims = [matrixEnvs objectForKey:base];
         if (delims.count == 2) {
             MTInner* inner = [[MTInner alloc] init];
             inner.leftBoundary = [self boundaryAtomForDelimiterName:delims[0]];
@@ -418,79 +459,74 @@ NSString *const MTSymbolDegree = @"\u00B0"; // \circ
             [table setAlignment:kMTColumnAlignmentLeft forColumn:i];
         }
         return table;
-    } else if ([env isEqualToString:@"eqalign"] || [env isEqualToString:@"split"] || [env isEqualToString:@"aligned"]) {
-        if (table.numColumns != 2) {
-            NSString* message = [NSString stringWithFormat:@"%@ environment can only have 2 columns", env];
-            if (error != nil) {
-                *error = [NSError errorWithDomain:MTParseError code:MTParseErrorInvalidNumColumns userInfo:@{ NSLocalizedDescriptionKey : message }];
-            }
-            return nil;
+    } else if ([base isEqualToString:@"array"] || [base isEqualToString:@"subarray"]) {
+        // The builder applies the {lcr} column spec afterwards. Cells are
+        // text style like a matrix; subarray (the body of \substack) is
+        // script style with no column gap.
+        BOOL sub = [base isEqualToString:@"subarray"];
+        table.interRowAdditionalSpacing = 0;
+        table.interColumnSpacing = sub ? 0 : 18;
+        insertStyleIntoCells(table, sub ? kMTLineStyleScript : kMTLineStyleText);
+        return table;
+    } else if (isAlignedEnvironment(base)) {
+        // amsmath alignment: columns alternate right/left in pairs, pairs
+        // are separated by \minalignsep, and a row may leave trailing
+        // columns out. Generated LaTeX does all three routinely, so none
+        // of them is an error here.
+        NSInteger cols = table.numColumns;
+        for (NSInteger i = 0; i < cols; i++) {
+            [table setAlignment:(i % 2 == 0 ? kMTColumnAlignmentRight : kMTColumnAlignmentLeft) forColumn:i];
         }
-        // Add a spacer before each of the second column elements. This is to create the correct spacing for = and other releations.
-        MTMathAtom* spacer = [MTMathAtom atomWithType:kMTMathAtomOrdinary value:@""];
-        for (int i = 0; i < table.cells.count; i++) {
-            NSArray<MTMathList*>* row = table.cells[i];
-            if (row.count > 1) {
-                [row[1] insertAtom:spacer atIndex:0];
+        for (NSArray<MTMathList*>* row in table.cells) {
+            for (NSInteger j = 1; j < row.count; j++) {
+                if (j % 2 == 1) {
+                    // A spacer before each second-of-pair column so a leading
+                    // = or other relation gets its inter-element spacing.
+                    [row[j] insertAtom:[MTMathAtom atomWithType:kMTMathAtomOrdinary value:@""] atIndex:0];
+                } else {
+                    [row[j] insertAtom:[[MTMathSpace alloc] initWithSpace:18] atIndex:0];
+                }
             }
         }
         table.interRowAdditionalSpacing = 1;
         table.interColumnSpacing = 0;
-        [table setAlignment:kMTColumnAlignmentRight forColumn:0];
-        [table setAlignment:kMTColumnAlignmentLeft forColumn:1];
         return table;
-    } else if ([env isEqualToString:@"displaylines"] || [env isEqualToString:@"gather"]) {
-        if (table.numColumns != 1) {
-            NSString* message = [NSString stringWithFormat:@"%@ environment can only have 1 column", env];
-            if (error != nil) {
-                *error = [NSError errorWithDomain:MTParseError code:MTParseErrorInvalidNumColumns userInfo:@{ NSLocalizedDescriptionKey : message }];
-            }
-            return nil;
-        }
+    } else if (isGatherEnvironment(base)) {
+        // Centered lines. A stray & becomes a spaced extra column rather
+        // than a failed formula.
         table.interRowAdditionalSpacing = 1;
-        table.interColumnSpacing = 0;
-        [table setAlignment:kMTColumnAlignmentCenter forColumn:0];
-        return table;
-    } else if ([env isEqualToString:@"eqnarray"]) {
-        if (table.numColumns != 3) {
-            NSString* message = @"eqnarray environment can only have 3 columns";
-            if (error != nil) {
-                *error = [NSError errorWithDomain:MTParseError code:MTParseErrorInvalidNumColumns userInfo:@{ NSLocalizedDescriptionKey : message }];
-            }
-            return nil;
+        table.interColumnSpacing = table.numColumns > 1 ? 18 : 0;
+        NSInteger cols = table.numColumns;
+        for (NSInteger i = 0; i < cols; i++) {
+            [table setAlignment:kMTColumnAlignmentCenter forColumn:i];
         }
+        return table;
+    } else if ([base isEqualToString:@"eqnarray"]) {
         table.interRowAdditionalSpacing = 1;
         table.interColumnSpacing = 18;
         [table setAlignment:kMTColumnAlignmentRight forColumn:0];
         [table setAlignment:kMTColumnAlignmentCenter forColumn:1];
         [table setAlignment:kMTColumnAlignmentLeft forColumn:2];
         return table;
-    } else if ([env isEqualToString:@"cases"]) {
-        if (table.numColumns != 2) {
-            NSString* message = @"cases environment can only have 2 columns";
-            if (error != nil) {
-                *error = [NSError errorWithDomain:MTParseError code:MTParseErrorInvalidNumColumns userInfo:@{ NSLocalizedDescriptionKey : message }];
-            }
-            return nil;
-        }
+    } else if ([base isEqualToString:@"cases"] || [base isEqualToString:@"dcases"]
+               || [base isEqualToString:@"rcases"] || [base isEqualToString:@"drcases"]) {
+        // Left-aligned columns; a row without & is fine. dcases keeps
+        // display style, rcases puts the brace on the right.
         table.interRowAdditionalSpacing = 0;
         table.interColumnSpacing = 18;
-        [table setAlignment:kMTColumnAlignmentLeft forColumn:0];
-        [table setAlignment:kMTColumnAlignmentLeft forColumn:1];
-        // All the lists are in textstyle
-        MTMathAtom* style = [[MTMathStyle alloc] initWithStyle:kMTLineStyleText];
-        for (int i = 0; i < table.cells.count; i++) {
-            NSArray<MTMathList*>* row = table.cells[i];
-            for (int j = 0; j < row.count; j++) {
-                [row[j] insertAtom:style atIndex:0];
-            }
+        NSInteger cols = table.numColumns;
+        for (NSInteger i = 0; i < cols; i++) {
+            [table setAlignment:kMTColumnAlignmentLeft forColumn:i];
         }
+        insertStyleIntoCells(table, [base hasPrefix:@"d"] ? kMTLineStyleDisplay : kMTLineStyleText);
+        BOOL braceOnRight = [base hasSuffix:@"rcases"];
         // Add delimiters
         MTInner* inner = [[MTInner alloc] init];
-        inner.leftBoundary = [self boundaryAtomForDelimiterName:@"{"];
-        inner.rightBoundary = [self boundaryAtomForDelimiterName:@"."];
+        inner.leftBoundary = [self boundaryAtomForDelimiterName:braceOnRight ? @"." : @"{"];
+        inner.rightBoundary = [self boundaryAtomForDelimiterName:braceOnRight ? @"}" : @"."];
         MTMathAtom* space = [self atomForLatexSymbolName:@","];
-        inner.innerList = [MTMathList mathListWithAtoms:space, table, nil];
+        inner.innerList = braceOnRight ? [MTMathList mathListWithAtoms:table, space, nil]
+                                       : [MTMathList mathListWithAtoms:space, table, nil];
         return inner;
     }
     if (error) {
@@ -683,16 +719,14 @@ NSString *const MTSymbolDegree = @"\u00B0"; // \circ
                      @"nprec" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2280"],
                      @"nsucceq" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u22E1"],
                      @"npreceq" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u22E0"],
-                     @"nprecsim" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u22E8"],
-                     @"nsuccsim" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u22E9"],
                      @"nprecapprox" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2AB9"],
                      @"nsuccapprox" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2ABA"],
                      @"precneq" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2AB1"],
                      @"succneq" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2AB2"],
                      @"precneqq" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2AB5"],
                      @"succneqq" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2AB6"],
-                     @"precnsim" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u22E6"],
-                     @"succnsim" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u22E7"],
+                     @"precnsim" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u22E8"],
+                     @"succnsim" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u22E9"],
 
                      // Missing relations (proof / set theory / amssymb)
                      @"vdash" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u22A2"],
@@ -882,6 +916,105 @@ NSString *const MTSymbolDegree = @"\u00B0"; // \circ
                      @"biguplus" : [MTMathAtomFactory operatorWithName:@"\u2A04" limits:YES],
                      @"bigsqcup" : [MTMathAtomFactory operatorWithName:@"\u2A06" limits:YES],
                      
+                     // AMS relations, arrows and operators from KaTeX's symbol table
+                     // (only names whose glyphs exist in Latin Modern Math)
+                     @"leadsto" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u21DD"],
+                     @"subsetneq" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u228A"],
+                     @"supsetneq" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u228B"],
+                     @"varsubsetneq" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u228A"],
+                     @"varsupsetneq" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u228B"],
+                     @"approxeq" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u224A"],
+                     @"Vdash" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u22A9"],
+                     @"Vvdash" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u22AA"],
+                     @"eqcirc" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2256"],
+                     @"circeq" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2257"],
+                     @"Doteq" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2251"],
+                     @"fallingdotseq" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2252"],
+                     @"risingdotseq" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2253"],
+                     @"lessapprox" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2A85"],
+                     @"gtrapprox" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2A86"],
+                     @"lesseqgtr" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u22DA"],
+                     @"gtreqless" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u22DB"],
+                     @"lesseqqgtr" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2A8B"],
+                     @"gtreqqless" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2A8C"],
+                     @"lessdot" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u22D6"],
+                     @"gtrdot" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u22D7"],
+                     @"eqslantless" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2A95"],
+                     @"eqslantgtr" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2A96"],
+                     @"lneq" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2A87"],
+                     @"gneq" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2A88"],
+                     @"lneqq" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2268"],
+                     @"gneqq" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2269"],
+                     @"lnsim" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u22E6"],
+                     @"gnsim" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u22E7"],
+                     @"lnapprox" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2A89"],
+                     @"gnapprox" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2A8A"],
+                     @"smile" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2323"],
+                     @"frown" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2322"],
+                     @"shortmid" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2223"],
+                     @"shortparallel" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2225"],
+                     @"nshortmid" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2224"],
+                     @"nshortparallel" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u2226"],
+                     @"between" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u226C"],
+                     @"Lleftarrow" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u21DA"],
+                     @"Rrightarrow" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u21DB"],
+                     @"looparrowleft" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u21AB"],
+                     @"looparrowright" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u21AC"],
+                     @"circlearrowleft" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u21BA"],
+                     @"circlearrowright" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u21BB"],
+                     @"leftrightsquigarrow" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u21AD"],
+                     @"rightrightarrows" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u21C9"],
+                     @"leftleftarrows" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u21C7"],
+                     @"upuparrows" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u21C8"],
+                     @"downdownarrows" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u21CA"],
+                     @"rightleftarrows" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u21C4"],
+                     @"leftrightarrows" : [MTMathAtom atomWithType:kMTMathAtomRelation value:@"\u21C6"],
+                     @"intercal" : [MTMathAtom atomWithType:kMTMathAtomBinaryOperator value:@"\u22BA"],
+                     @"ltimes" : [MTMathAtom atomWithType:kMTMathAtomBinaryOperator value:@"\u22C9"],
+                     @"rtimes" : [MTMathAtom atomWithType:kMTMathAtomBinaryOperator value:@"\u22CA"],
+                     @"leftthreetimes" : [MTMathAtom atomWithType:kMTMathAtomBinaryOperator value:@"\u22CB"],
+                     @"rightthreetimes" : [MTMathAtom atomWithType:kMTMathAtomBinaryOperator value:@"\u22CC"],
+                     @"dotplus" : [MTMathAtom atomWithType:kMTMathAtomBinaryOperator value:@"\u2214"],
+                     @"curlyvee" : [MTMathAtom atomWithType:kMTMathAtomBinaryOperator value:@"\u22CE"],
+                     @"curlywedge" : [MTMathAtom atomWithType:kMTMathAtomBinaryOperator value:@"\u22CF"],
+                     @"bigtriangleup" : [MTMathAtom atomWithType:kMTMathAtomBinaryOperator value:@"\u25B3"],
+                     @"bigtriangledown" : [MTMathAtom atomWithType:kMTMathAtomBinaryOperator value:@"\u25BD"],
+                     @"lhd" : [MTMathAtom atomWithType:kMTMathAtomBinaryOperator value:@"\u22B2"],
+                     @"rhd" : [MTMathAtom atomWithType:kMTMathAtomBinaryOperator value:@"\u22B3"],
+                     @"unlhd" : [MTMathAtom atomWithType:kMTMathAtomBinaryOperator value:@"\u22B4"],
+                     @"unrhd" : [MTMathAtom atomWithType:kMTMathAtomBinaryOperator value:@"\u22B5"],
+                     @"blacksquare" : [MTMathAtom atomWithType:kMTMathAtomOrdinary value:@"\u25A0"],
+                     @"checkmark" : [MTMathAtom atomWithType:kMTMathAtomOrdinary value:@"\u2713"],
+                     @"maltese" : [MTMathAtom atomWithType:kMTMathAtomOrdinary value:@"\u2720"],
+                     @"backprime" : [MTMathAtom atomWithType:kMTMathAtomOrdinary value:@"\u2035"],
+                     @"yen" : [MTMathAtom atomWithType:kMTMathAtomOrdinary value:@"\u00A5"],
+                     @"Bbbk" : [MTMathAtom atomWithType:kMTMathAtomOrdinary value:@"\U0001D55C"],
+                     // Greek capitals that share a glyph with a Latin letter
+                     @"Alpha" : [MTMathAtom atomWithType:kMTMathAtomVariable value:@"\u0391"],
+                     @"Beta" : [MTMathAtom atomWithType:kMTMathAtomVariable value:@"\u0392"],
+                     @"Epsilon" : [MTMathAtom atomWithType:kMTMathAtomVariable value:@"\u0395"],
+                     @"Zeta" : [MTMathAtom atomWithType:kMTMathAtomVariable value:@"\u0396"],
+                     @"Eta" : [MTMathAtom atomWithType:kMTMathAtomVariable value:@"\u0397"],
+                     @"Iota" : [MTMathAtom atomWithType:kMTMathAtomVariable value:@"\u0399"],
+                     @"Kappa" : [MTMathAtom atomWithType:kMTMathAtomVariable value:@"\u039A"],
+                     @"Mu" : [MTMathAtom atomWithType:kMTMathAtomVariable value:@"\u039C"],
+                     @"Nu" : [MTMathAtom atomWithType:kMTMathAtomVariable value:@"\u039D"],
+                     @"Omicron" : [MTMathAtom atomWithType:kMTMathAtomVariable value:@"\u039F"],
+                     @"Rho" : [MTMathAtom atomWithType:kMTMathAtomVariable value:@"\u03A1"],
+                     @"Tau" : [MTMathAtom atomWithType:kMTMathAtomVariable value:@"\u03A4"],
+                     @"Chi" : [MTMathAtom atomWithType:kMTMathAtomVariable value:@"\u03A7"],
+                     // Named delimiters, also usable outside \left/\right
+                     @"llbracket" : [MTMathAtom atomWithType:kMTMathAtomOpen value:@"\u27E6"],
+                     @"rrbracket" : [MTMathAtom atomWithType:kMTMathAtomClose value:@"\u27E7"],
+                     @"lvert" : [MTMathAtom atomWithType:kMTMathAtomOpen value:@"|"],
+                     @"rvert" : [MTMathAtom atomWithType:kMTMathAtomClose value:@"|"],
+                     @"lVert" : [MTMathAtom atomWithType:kMTMathAtomOpen value:@"\u2016"],
+                     @"rVert" : [MTMathAtom atomWithType:kMTMathAtomClose value:@"\u2016"],
+                     @"lbrack" : [MTMathAtom atomWithType:kMTMathAtomOpen value:@"["],
+                     @"rbrack" : [MTMathAtom atomWithType:kMTMathAtomClose value:@"]"],
+                     @"lparen" : [MTMathAtom atomWithType:kMTMathAtomOpen value:@"("],
+                     @"rparen" : [MTMathAtom atomWithType:kMTMathAtomClose value:@")"],
+                     
                      // Latex command characters
                      @"{" : [MTMathAtom atomWithType:kMTMathAtomOpen value:@"{"],
                      @"}" : [MTMathAtom atomWithType:kMTMathAtomClose value:@"}"],
@@ -981,6 +1114,16 @@ NSString *const MTSymbolDegree = @"\u00B0"; // \circ
                     @"npreccurlyeq" : @"npreceq",
                     @"precnapprox" : @"nprecapprox",
                     @"succnapprox" : @"nsuccapprox",
+                    @"nprecsim" : @"precnsim",
+                    @"nsuccsim" : @"succnsim",
+                    @"varnothing" : @"emptyset",
+                    @"thicksim" : @"sim",
+                    @"thickapprox" : @"approx",
+                    @"varpropto" : @"propto",
+                    @"hslash" : @"hbar",
+                    @"doteqdot" : @"Doteq",
+                    @"centerdot" : @"cdot",
+                    @"smallsmile" : @"smile",
                     };
     });
     return aliases;
@@ -992,10 +1135,13 @@ NSString *const MTSymbolDegree = @"\u00B0"; // \circ
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         NSDictionary* commands = [self supportedLatexSymbols];
+        // Names for characters that already serialize as themselves; they
+        // parse, but must not replace the character on the way back out.
+        NSSet<NSString*>* characterAliases = [NSSet setWithArray:@[ @"lparen", @"rparen", @"lbrack", @"rbrack" ]];
         textToCommands = [NSMutableDictionary dictionaryWithCapacity:commands.count];
         for (NSString* command in commands) {
             MTMathAtom* atom = commands[command];
-            if (atom.nucleus.length == 0) {
+            if (atom.nucleus.length == 0 || [characterAliases containsObject:command]) {
                 continue;
             }
             NSNumber* typeKey = @(atom.type);
@@ -1101,6 +1247,14 @@ NSString *const MTSymbolDegree = @"\u00B0"; // \circ
                    @"vert" : @"|",
                    @"llbracket" : @"\u27E6",
                    @"rrbracket" : @"\u27E7",
+                   @"lvert" : @"|",
+                   @"rvert" : @"|",
+                   @"lVert" : @"\u2016",
+                   @"rVert" : @"\u2016",
+                   @"lbrack" : @"[",
+                   @"rbrack" : @"]",
+                   @"lparen" : @"(",
+                   @"rparen" : @")",
                    @"uparrow" : @"\u2191",
                    @"downarrow" : @"\u2193",
                    @"updownarrow" : @"\u2195",
@@ -1168,6 +1322,7 @@ NSString *const MTSymbolDegree = @"\u00B0"; // \circ
                        @"mathbf": @(kMTFontStyleBold),
                        @"bf": @(kMTFontStyleBold),
                        @"mathcal": @(kMTFontStyleCaligraphic),
+                       @"mathscr": @(kMTFontStyleCaligraphic),
                        @"cal": @(kMTFontStyleCaligraphic),
                        @"mathtt": @(kMTFontStyleTypewriter),
                        @"mathit": @(kMTFontStyleItalic),

@@ -2832,4 +2832,24 @@
                          @"Display must contain at least one sub-display");
 }
 
+- (void) testArrayAndRaggedAlignedTypeset
+{
+    NSArray<NSString*>* sources = @[
+        @"\\begin{array}{|c|rl|} \\hline a & b & c \\\\ \\hline d & e \\\\ \\hline \\end{array}",
+        @"\\begin{aligned} a &= b & c &= d \\\\ e \\end{aligned}",
+        @"\\begin{cases} x \\\\ y & z \\end{cases}",
+        @"\\begin{smallmatrix} 1 & 2 \\\\ 3 & 4 \\end{smallmatrix}",
+        @"\\begin{pmatrix*}[r] 1 & -20 \\\\ 300 & 4 \\end{pmatrix*}",
+        @"\\begin{gather} a & b \\\\ c \\end{gather}",
+    ];
+    for (NSString* source in sources) {
+        NSError* error = nil;
+        MTMathList* list = [MTMathListBuilder buildFromString:source error:&error];
+        XCTAssertNotNil(list, @"%@: %@", source, error);
+        MTMathListDisplay* display = [MTTypesetter createLineForMathList:list font:self.font style:kMTLineStyleDisplay];
+        XCTAssertNotNil(display, @"%@", source);
+        XCTAssertGreaterThan(display.width, 0, @"%@", source);
+    }
+}
+
 @end

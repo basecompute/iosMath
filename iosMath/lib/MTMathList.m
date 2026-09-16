@@ -1011,14 +1011,32 @@ static NSString* fractionCommandForDelimiterPair(NSString* leftDelimiter, NSStri
 - (MTMathList *)serializedCellAtRow:(NSUInteger)row column:(NSUInteger)column
 {
     MTMathList* cell = self.cells[row][column];
-    if ([self.environment isEqualToString:@"matrix"]) {
+    NSString* env = self.environment;
+    if ([env hasSuffix:@"*"]) {
+        env = [env substringToIndex:env.length - 1];
+    }
+    static NSSet<NSString*>* styledEnvs = nil;
+    static NSSet<NSString*>* alignedEnvs = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        styledEnvs = [NSSet setWithArray:@[ @"matrix", @"smallmatrix", @"array", @"subarray" ]];
+        alignedEnvs = [NSSet setWithArray:@[ @"eqalign", @"aligned", @"split", @"align", @"alignat",
+                                             @"alignedat", @"flalign", @"xalignat" ]];
+    });
+    if (env && [styledEnvs containsObject:env]) {
+        // The cell style is inserted by the builder, not part of the source.
         if (cell.atoms.count >= 1 && cell.atoms[0].type == kMTMathAtomStyle) {
             NSArray* atoms = [cell.atoms subarrayWithRange:NSMakeRange(1, cell.atoms.count - 1)];
             return [MTMathList mathListWithAtomsArray:atoms];
         }
     }
-    if ([self.environment isEqualToString:@"eqalign"] || [self.environment isEqualToString:@"aligned"] || [self.environment isEqualToString:@"split"]) {
-        if (column == 1 && cell.atoms.count >= 1 && cell.atoms[0].type == kMTMathAtomOrdinary && cell.atoms[0].nucleus.length == 0) {
+    if (env && [alignedEnvs containsObject:env] && column >= 1 && cell.atoms.count >= 1) {
+        // Odd columns start with the relation spacer and later even columns
+        // with the inter-pair gap; neither is part of the source.
+        MTMathAtom* first = cell.atoms[0];
+        BOOL spacer = (column % 2 == 1) && first.type == kMTMathAtomOrdinary && first.nucleus.length == 0;
+        BOOL gap = (column % 2 == 0) && first.type == kMTMathAtomSpace;
+        if (spacer || gap) {
             NSArray* atoms = [cell.atoms subarrayWithRange:NSMakeRange(1, cell.atoms.count - 1)];
             return [MTMathList mathListWithAtomsArray:atoms];
         }
@@ -1139,6 +1157,29 @@ static NSString* fractionCommandForDelimiterPair(NSString* leftDelimiter, NSStri
 {
     if (self.environment) {
         [str appendFormat:@"\\begin{%@}", self.environment];
+        NSString* base = self.environment;
+        if ([base hasSuffix:@"*"]) {
+            base = [base substringToIndex:base.length - 1];
+        }
+        if ([base isEqualToString:@"array"] || [base isEqualToString:@"subarray"]) {
+            // The column preamble lives in the alignments.
+            NSMutableString* spec = [NSMutableString string];
+            NSUInteger cols = self.numColumns;
+            for (NSUInteger i = 0; i < cols; i++) {
+                switch ([self getAlignmentForColumn:i]) {
+                    case kMTColumnAlignmentLeft:
+                        [spec appendString:@"l"];
+                        break;
+                    case kMTColumnAlignmentRight:
+                        [spec appendString:@"r"];
+                        break;
+                    case kMTColumnAlignmentCenter:
+                        [spec appendString:@"c"];
+                        break;
+                }
+            }
+            [str appendFormat:@"{%@}", spec];
+        }
     }
     for (NSUInteger i = 0; i < self.numRows; i++) {
         NSArray<MTMathList*>* row = self.cells[i];
